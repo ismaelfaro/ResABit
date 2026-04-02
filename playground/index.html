@@ -1,0 +1,981 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ResAbit — WebGPU Playground</title>
+  <style>
+    :root {
+      --bg:      #0f1117;
+      --surface: #1a1d27;
+      --border:  #2a2d3a;
+      --accent:  #5c7cfa;
+      --accent2: #f06595;
+      --text:    #e8eaf0;
+      --muted:   #8890a4;
+      --green:   #51cf66;
+      --orange:  #fd7e14;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 20px 32px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .logo { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.5px; }
+    .logo span { color: var(--accent); }
+    .badge {
+      font-size: 0.7rem; background: var(--accent); color: #fff;
+      padding: 2px 8px; border-radius: 99px; font-weight: 600;
+    }
+    .gpu-badge {
+      margin-left: auto;
+      font-size: 0.75rem; padding: 4px 12px; border-radius: 6px;
+      font-weight: 600; border: 1px solid var(--border);
+    }
+    .gpu-badge.ok   { color: var(--green);  border-color: var(--green); }
+    .gpu-badge.fail { color: var(--orange); border-color: var(--orange); }
+
+    main {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto auto auto;
+      gap: 16px;
+      padding: 24px 32px;
+      flex: 1;
+    }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card h3 {
+      font-size: 0.9rem; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.08em;
+      margin-bottom: 14px;
+    }
+    .card.full { grid-column: 1 / -1; }
+
+    /* ── Visualiser ── */
+    canvas { width: 100%; border-radius: 8px; display: block; }
+
+    /* ── Benchmark ── */
+    .bench-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 10px; font-size: 0.9rem;
+    }
+    .bench-label { width: 130px; color: var(--muted); flex-shrink: 0; }
+    .bench-bar-wrap { flex: 1; background: var(--border); border-radius: 4px; height: 18px; }
+    .bench-bar {
+      height: 100%; border-radius: 4px; transition: width 0.5s ease;
+    }
+    .bench-val { width: 80px; text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* ── Attention residual viz ── */
+    #attn-canvas { height: 120px; }
+
+    /* ── Controls ── */
+    .controls {
+      display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px;
+    }
+    button {
+      background: var(--accent); color: #fff; border: none;
+      padding: 8px 18px; border-radius: 8px; font-size: 0.875rem;
+      cursor: pointer; font-weight: 600; transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button.secondary {
+      background: transparent; border: 1px solid var(--border); color: var(--text);
+    }
+    select, input[type=range] {
+      background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      padding: 6px 10px; border-radius: 6px; font-size: 0.875rem;
+    }
+    label { font-size: 0.8rem; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+
+    /* ── Log ── */
+    #log {
+      font-family: 'Fira Mono', monospace; font-size: 0.8rem;
+      color: var(--green); background: #0a0c12;
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; height: 140px; overflow-y: auto;
+      line-height: 1.6;
+    }
+    #log .ts { color: var(--muted); }
+    #log .err { color: var(--accent2); }
+
+    /* ── Stats grid ── */
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    @media (max-width: 700px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+    .stat-box {
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 12px; text-align: center;
+    }
+    .stat-box .val { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+    .stat-box .key { font-size: 0.72rem; color: var(--muted); margin-top: 2px; }
+
+    /* ── Weight visualiser ── */
+    #weight-canvas { height: 160px; image-rendering: pixelated; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Res<span>A</span>bit</div>
+  <div class="badge">WebGPU</div>
+  <div class="badge" style="background:#2a2d3a;color:var(--muted)">1-bit + Attention Residuals</div>
+  <div id="gpu-badge" class="gpu-badge fail">Checking WebGPU…</div>
+</header>
+
+<main>
+
+  <!-- ── Stats ──────────────────────────────────────── -->
+  <div class="card full">
+    <h3>Model Stats</h3>
+    <div class="stats">
+      <div class="stat-box"><div class="val" id="s-bpw">1.125</div><div class="key">bits / weight</div></div>
+      <div class="stat-box"><div class="val" id="s-ratio">14.2×</div><div class="key">vs FP16</div></div>
+      <div class="stat-box"><div class="val" id="s-tps">—</div><div class="key">matmul GFLOPS</div></div>
+      <div class="stat-box"><div class="val" id="s-mem">—</div><div class="key">weight KB (layer)</div></div>
+    </div>
+  </div>
+
+  <!-- ── 1-bit Weight Visualiser ────────────────────── -->
+  <div class="card">
+    <h3>1-bit Weight Visualiser (Q1_0_g128)</h3>
+    <div class="controls">
+      <label>Rows (out) <input type="range" id="rows" min="8" max="128" value="32" step="8"></label>
+      <label>Cols (in)  <input type="range" id="cols" min="128" max="512" value="128" step="128"></label>
+      <button id="btn-randomize">Randomize</button>
+      <button id="btn-quantize" class="secondary">Show quantized</button>
+    </div>
+    <canvas id="weight-canvas"></canvas>
+    <p style="font-size:0.75rem;color:var(--muted);margin-top:8px">
+      White = +scale &nbsp;·&nbsp; Black = −scale &nbsp;·&nbsp; Groups of 128 shown with separator
+    </p>
+  </div>
+
+  <!-- ── Attention Residual Accumulator ─────────────── -->
+  <div class="card">
+    <h3>Attention Residual Accumulator (R_l)</h3>
+    <div class="controls">
+      <label>Layers <input type="range" id="n-layers" min="2" max="24" value="8" step="1"></label>
+      <label>α init <input type="range" id="alpha-init" min="0" max="1" value="0" step="0.05"></label>
+      <button id="btn-step">Step layer</button>
+      <button id="btn-reset" class="secondary">Reset</button>
+    </div>
+    <canvas id="attn-canvas"></canvas>
+    <p style="font-size:0.75rem;color:var(--muted);margin-top:8px">
+      Blue = hidden state &nbsp;·&nbsp; Orange = attention residual R_l &nbsp;·&nbsp; each bar = one hidden dim
+    </p>
+  </div>
+
+  <!-- ── GPU Benchmark ──────────────────────────────── -->
+  <div class="card">
+    <h3>WebGPU Matmul Benchmark</h3>
+    <div class="controls">
+      <label>Matrix M <select id="bench-m"><option>256</option><option selected>512</option><option>1024</option></select></label>
+      <label>Matrix N <select id="bench-n"><option>256</option><option selected>512</option><option>1024</option></select></label>
+      <button id="btn-bench">Run benchmark</button>
+    </div>
+    <div id="bench-results">
+      <div class="bench-row">
+        <span class="bench-label">FP32 GEMM</span>
+        <div class="bench-bar-wrap"><div id="bar-fp32" class="bench-bar" style="background:var(--muted);width:0%"></div></div>
+        <span class="bench-val" id="val-fp32">—</span>
+      </div>
+      <div class="bench-row">
+        <span class="bench-label">1-bit (dequant)</span>
+        <div class="bench-bar-wrap"><div id="bar-1bit" class="bench-bar" style="background:var(--accent);width:0%"></div></div>
+        <span class="bench-val" id="val-1bit">—</span>
+      </div>
+      <div class="bench-row">
+        <span class="bench-label">1-bit (XNOR sim)</span>
+        <div class="bench-bar-wrap"><div id="bar-xnor" class="bench-bar" style="background:var(--accent2);width:0%"></div></div>
+        <span class="bench-val" id="val-xnor">—</span>
+      </div>
+    </div>
+    <p style="font-size:0.75rem;color:var(--muted);margin-top:8px" id="bench-note">
+      Click "Run benchmark" to start. Requires WebGPU.
+    </p>
+  </div>
+
+  <!-- ── Dequantise demo ─────────────────────────────── -->
+  <div class="card">
+    <h3>Live Q1_0_g128 Dequantisation</h3>
+    <div class="controls">
+      <button id="btn-dequant">Dequantise random layer</button>
+      <button id="btn-quant-err" class="secondary">Show quant error</button>
+    </div>
+    <canvas id="dequant-canvas" style="height:140px"></canvas>
+    <p style="font-size:0.75rem;color:var(--muted);margin-top:8px">
+      Green = original FP32 &nbsp;·&nbsp; Blue = 1-bit dequantized &nbsp;·&nbsp; Red = error
+    </p>
+  </div>
+
+  <!-- ── Model Chat ─────────────────────────────────── -->
+  <div class="card full" id="chat-card">
+    <h3>Run ResAbit Model
+      <span id="model-status-badge" style="margin-left:10px;font-size:0.7rem;padding:2px 10px;border-radius:99px;background:#2a2d3a;color:var(--muted);font-weight:600;text-transform:none;letter-spacing:0">
+        checking server…
+      </span>
+    </h3>
+
+    <div id="chat-messages" style="
+      min-height:220px; max-height:420px; overflow-y:auto;
+      background:var(--bg); border:1px solid var(--border);
+      border-radius:8px; padding:16px; margin-bottom:12px;
+      font-size:0.875rem; line-height:1.65;
+    ">
+      <div id="chat-placeholder" style="color:var(--muted);font-style:italic">
+        Start the server first:<br>
+        <code style="color:var(--green)">cd .. &amp;&amp; python playground/server.py</code><br><br>
+        Then type a prompt below and press <strong>Generate</strong>.
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <textarea id="chat-prompt" rows="2" placeholder="Type a prompt…" style="
+        flex:1; min-width:200px; background:var(--bg); color:var(--text);
+        border:1px solid var(--border); border-radius:8px; padding:10px;
+        font-size:0.875rem; resize:vertical; font-family:inherit;
+      "></textarea>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button id="btn-generate" disabled>Generate</button>
+        <button id="btn-stop" class="secondary" style="display:none">Stop</button>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:0.8rem;color:var(--muted)">
+      <label>Max tokens
+        <input type="range" id="max-tokens" min="20" max="400" value="150" step="10" style="width:100px">
+        <span id="max-tokens-val">150</span>
+      </label>
+      <label>Temperature
+        <input type="range" id="temperature" min="0" max="2" value="0.8" step="0.05" style="width:100px">
+        <span id="temp-val">0.8</span>
+      </label>
+      <span id="chat-tps" style="margin-left:auto;font-variant-numeric:tabular-nums"></span>
+    </div>
+  </div>
+
+  <!-- ── Log ────────────────────────────────────────── -->
+  <div class="card full">
+    <h3>Log</h3>
+    <div id="log"></div>
+  </div>
+
+</main>
+
+<script type="module">
+// ═══════════════════════════════════════════════════════════════
+//  ResAbit WebGPU Playground
+//  Pure browser implementation of Q1_0_g128 + Attention Residuals
+// ═══════════════════════════════════════════════════════════════
+
+const log = (() => {
+  const el = document.getElementById('log');
+  return (msg, cls='') => {
+    const ts = new Date().toLocaleTimeString('en', { hour12: false, hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    el.innerHTML += `<div><span class="ts">[${ts}]</span> <span class="${cls}">${msg}</span></div>`;
+    el.scrollTop = el.scrollHeight;
+  };
+})();
+
+// ── WebGPU init ──────────────────────────────────────────────────────────────
+let gpu = null;
+let device = null;
+const badge = document.getElementById('gpu-badge');
+
+async function initWebGPU() {
+  if (!navigator.gpu) {
+    badge.textContent = 'WebGPU: Not supported';
+    badge.className = 'gpu-badge fail';
+    log('WebGPU not available in this browser. Visualisations use CPU fallback.', 'err');
+    return false;
+  }
+  try {
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    if (!adapter) throw new Error('No adapter');
+    device = await adapter.requestDevice();
+    const info = await adapter.requestAdapterInfo?.() ?? {};
+    badge.textContent = `WebGPU: ${info.description || 'Active'}`;
+    badge.className = 'gpu-badge ok';
+    log(`WebGPU initialised — ${info.description || 'GPU adapter ready'}`);
+    return true;
+  } catch (e) {
+    badge.textContent = 'WebGPU: Error';
+    badge.className = 'gpu-badge fail';
+    log(`WebGPU init failed: ${e.message}`, 'err');
+    return false;
+  }
+}
+
+// ── Q1_0_g128 quantisation (JS implementation) ───────────────────────────────
+const GROUP_SIZE = 128;
+
+function quantizeQ1_0_g128(weights /* Float32Array [out, in] */, out_f, in_f) {
+  const nGroups = in_f / GROUP_SIZE;
+  const scales  = new Float32Array(out_f * nGroups);
+  const bits    = new Uint8Array(out_f * Math.ceil(in_f / 8));
+
+  for (let o = 0; o < out_f; o++) {
+    for (let g = 0; g < nGroups; g++) {
+      // compute L∞ scale per group
+      let maxAbs = 0;
+      for (let k = 0; k < GROUP_SIZE; k++) {
+        const v = Math.abs(weights[o * in_f + g * GROUP_SIZE + k]);
+        if (v > maxAbs) maxAbs = v;
+      }
+      const scale = Math.max(maxAbs, 1e-8);
+      scales[o * nGroups + g] = scale;
+
+      // pack bits
+      for (let k = 0; k < GROUP_SIZE; k++) {
+        const wi = weights[o * in_f + g * GROUP_SIZE + k];
+        const bit = wi >= 0 ? 1 : 0;  // sign → 0/1
+        const idx = o * Math.ceil(in_f / 8) + Math.floor((g * GROUP_SIZE + k) / 8);
+        const pos = (g * GROUP_SIZE + k) % 8;
+        bits[idx] |= (bit << pos);
+      }
+    }
+  }
+  return { bits, scales, out_f, in_f, nGroups };
+}
+
+function dequantizeQ1_0_g128({ bits, scales, out_f, in_f, nGroups }) {
+  const w = new Float32Array(out_f * in_f);
+  for (let o = 0; o < out_f; o++) {
+    for (let g = 0; g < nGroups; g++) {
+      const scale = scales[o * nGroups + g];
+      for (let k = 0; k < GROUP_SIZE; k++) {
+        const flatIdx = g * GROUP_SIZE + k;
+        const byteIdx = o * Math.ceil(in_f / 8) + Math.floor(flatIdx / 8);
+        const bitPos  = flatIdx % 8;
+        const bit = (bits[byteIdx] >> bitPos) & 1;
+        w[o * in_f + flatIdx] = scale * (2 * bit - 1);  // ±scale
+      }
+    }
+  }
+  return w;
+}
+
+function storageMB(out_f, in_f) {
+  const nGroups = in_f / GROUP_SIZE;
+  const bitsBytes  = out_f * Math.ceil(in_f / 8);
+  const scaleBytes = out_f * nGroups * 2;  // FP16 = 2 bytes
+  return (bitsBytes + scaleBytes) / 1024;
+}
+
+// ── Canvas helpers ────────────────────────────────────────────────────────────
+function px(c, x, y, r, g, b, a=255) {
+  const i = (y * c.width + x) * 4;
+  c.data[i]=r; c.data[i+1]=g; c.data[i+2]=b; c.data[i+3]=a;
+}
+
+function hsla(h, s, l, a=1) {
+  return `hsla(${h},${s}%,${l}%,${a})`;
+}
+
+// ── Weight Visualiser ─────────────────────────────────────────────────────────
+const wCanvas = document.getElementById('weight-canvas');
+const wCtx = wCanvas.getContext('2d');
+let wWeights = null;
+let wQuant = null;
+let showQuantized = false;
+
+function renderWeights() {
+  const rows = +document.getElementById('rows').value;
+  const cols = +document.getElementById('cols').value;
+  wCanvas.width  = cols;
+  wCanvas.height = rows;
+  wCanvas.style.height = Math.min(160, rows * 4) + 'px';
+
+  const img = wCtx.createImageData(cols, rows);
+  const src = showQuantized && wQuant ? dequantizeQ1_0_g128(wQuant) : wWeights;
+  if (!src) return;
+
+  let minV = Infinity, maxV = -Infinity;
+  for (let i = 0; i < src.length; i++) { minV = Math.min(minV, src[i]); maxV = Math.max(maxV, src[i]); }
+  const range = maxV - minV || 1;
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const v = src[r * cols + c];
+      const t = (v - minV) / range;
+      const bright = Math.round(t * 255);
+      // group separator
+      const gSep = (c % GROUP_SIZE === 0 && c > 0);
+      px(img, c, r, gSep ? 80 : bright, gSep ? 120 : bright, gSep ? 180 : bright);
+    }
+  }
+  wCtx.putImageData(img, 0, 0);
+  document.getElementById('s-mem').textContent = storageMB(rows, cols).toFixed(1) + ' KB';
+}
+
+function randomizeWeights() {
+  const rows = +document.getElementById('rows').value;
+  const cols = +document.getElementById('cols').value;
+  // Kaiming-uniform init
+  const bound = Math.sqrt(1 / cols);
+  wWeights = new Float32Array(rows * cols).map(() => (Math.random() * 2 - 1) * bound);
+  wQuant = quantizeQ1_0_g128(wWeights, rows, cols);
+  showQuantized = false;
+  renderWeights();
+  log(`Randomised weight matrix [${rows}×${cols}] — scale range: ` +
+    `${Math.min(...wQuant.scales).toFixed(4)} – ${Math.max(...wQuant.scales).toFixed(4)}`);
+}
+
+document.getElementById('btn-randomize').onclick = randomizeWeights;
+document.getElementById('btn-quantize').onclick = () => {
+  showQuantized = !showQuantized;
+  document.getElementById('btn-quantize').textContent = showQuantized ? 'Show original' : 'Show quantized';
+  renderWeights();
+  log(`Showing ${showQuantized ? 'quantized (1-bit dequantized)' : 'original FP32'} weights`);
+};
+document.querySelectorAll('#rows, #cols').forEach(el => el.oninput = renderWeights);
+
+// ── Attention Residual Visualiser ─────────────────────────────────────────────
+const aCanvas = document.getElementById('attn-canvas');
+const aCtx = aCanvas.getContext('2d');
+const DIM = 64;
+let attnState = { h: new Float32Array(DIM), R: new Float32Array(DIM), layer: 0, alpha: 0 };
+
+function resetAttn() {
+  attnState.h = new Float32Array(DIM).map(() => Math.random() * 2 - 1);
+  attnState.R = new Float32Array(DIM);
+  attnState.layer = 0;
+  renderAttn();
+  log('Attention residual accumulator reset (layer 0)');
+}
+
+function stepAttn() {
+  const nLayers = +document.getElementById('n-layers').value;
+  const alpha   = +document.getElementById('alpha-init').value;
+  if (attnState.layer >= nLayers) { resetAttn(); return; }
+
+  // Simulate attention output (small random perturbation for demo)
+  const A = new Float32Array(DIM).map(() => (Math.random() - 0.5) * 0.3);
+
+  // Attention Residual update:
+  //   h = h + A + alpha * R
+  //   R = R + A
+  const newH = attnState.h.map((v, i) => v + A[i] + alpha * attnState.R[i]);
+  const newR = attnState.R.map((v, i) => v + A[i]);
+
+  attnState.h = newH;
+  attnState.R = newR;
+  attnState.layer++;
+
+  renderAttn();
+  log(`Layer ${attnState.layer}/${nLayers} — R norm: ${norm(newR).toFixed(3)}, H norm: ${norm(newH).toFixed(3)}`);
+}
+
+function norm(a) { return Math.sqrt(a.reduce((s, v) => s + v * v, 0)); }
+
+function renderAttn() {
+  aCanvas.width  = aCanvas.clientWidth || 400;
+  aCanvas.height = aCanvas.clientHeight || 120;
+  const W = aCanvas.width, H = aCanvas.height;
+  aCtx.clearRect(0, 0, W, H);
+
+  const barW = (W - 2) / DIM;
+  const midY = H / 2;
+  const scale = 0.4;
+
+  for (let i = 0; i < DIM; i++) {
+    const x = i * barW;
+    // h bar (blue)
+    const hH = attnState.h[i] * scale * midY;
+    aCtx.fillStyle = hsla(220, 80, 60, 0.8);
+    aCtx.fillRect(x, midY - Math.max(0, hH), barW - 1, Math.abs(hH));
+    // R bar (orange)
+    const rH = attnState.R[i] * scale * midY * 0.5;
+    aCtx.fillStyle = hsla(30, 90, 60, 0.7);
+    aCtx.fillRect(x, midY - Math.max(0, rH), barW - 1, Math.abs(rH));
+  }
+  // axis
+  aCtx.strokeStyle = 'rgba(255,255,255,0.15)';
+  aCtx.beginPath(); aCtx.moveTo(0, midY); aCtx.lineTo(W, midY); aCtx.stroke();
+
+  // layer label
+  const nL = +document.getElementById('n-layers').value;
+  aCtx.fillStyle = 'var(--muted)';
+  aCtx.font = '11px system-ui';
+  aCtx.fillText(`Layer ${attnState.layer}/${nL}  α=${(+document.getElementById('alpha-init').value).toFixed(2)}`, 6, 14);
+}
+
+document.getElementById('btn-step').onclick = stepAttn;
+document.getElementById('btn-reset').onclick = resetAttn;
+document.querySelectorAll('#n-layers,#alpha-init').forEach(e => e.oninput = renderAttn);
+
+// ── Dequant demo ──────────────────────────────────────────────────────────────
+const dqCanvas = document.getElementById('dequant-canvas');
+const dqCtx = dqCanvas.getContext('2d');
+
+function renderDequant(showError = false) {
+  const N = 256;
+  const orig = new Float32Array(N).map(() => (Math.random() - 0.5) * 2);
+  const q = quantizeQ1_0_g128(orig, 1, N);
+  const deq = dequantizeQ1_0_g128(q);
+
+  dqCanvas.width  = N;
+  dqCanvas.height = dqCanvas.clientHeight || 140;
+  const W = dqCanvas.width, H = dqCanvas.height;
+  dqCtx.clearRect(0, 0, W, H);
+
+  const midY = H / 2;
+  const sy = H * 0.4;
+
+  for (let i = 0; i < N; i++) {
+    const x = i;
+    // original (green)
+    if (!showError) {
+      dqCtx.fillStyle = hsla(140, 70, 50, 0.8);
+      const h = orig[i] * sy;
+      dqCtx.fillRect(x, midY - Math.max(0, h), 1, Math.abs(h));
+    }
+    // dequantized (blue)
+    if (!showError) {
+      dqCtx.fillStyle = hsla(220, 80, 60, 0.5);
+      const h2 = deq[i] * sy;
+      dqCtx.fillRect(x, midY - Math.max(0, h2), 1, Math.abs(h2));
+    }
+    // error (red)
+    if (showError) {
+      const err = orig[i] - deq[i];
+      dqCtx.fillStyle = hsla(0, 80, 55, 0.9);
+      const h3 = err * sy * 3;
+      dqCtx.fillRect(x, midY - Math.max(0, h3), 1, Math.abs(h3));
+    }
+  }
+  dqCtx.strokeStyle = 'rgba(255,255,255,0.12)';
+  dqCtx.beginPath(); dqCtx.moveTo(0, midY); dqCtx.lineTo(W, midY); dqCtx.stroke();
+
+  const mse = orig.reduce((s, v, i) => s + (v - deq[i]) ** 2, 0) / N;
+  log(`Dequant demo — MSE: ${mse.toFixed(5)}, max error: ${Math.max(...orig.map((v,i)=>Math.abs(v-deq[i]))).toFixed(4)}`);
+}
+
+document.getElementById('btn-dequant').onclick    = () => renderDequant(false);
+document.getElementById('btn-quant-err').onclick  = () => renderDequant(true);
+
+// ── WebGPU Benchmark ─────────────────────────────────────────────────────────
+
+// WGSL shader for FP32 GEMM
+const GEMM_SHADER = /* wgsl */`
+@group(0) @binding(0) var<storage, read> A: array<f32>;
+@group(0) @binding(1) var<storage, read> B: array<f32>;
+@group(0) @binding(2) var<storage, read_write> C: array<f32>;
+@group(0) @binding(3) var<uniform> dims: vec3u;  // M, N, K
+
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let row = gid.x;
+  let col = gid.y;
+  let M = dims.x; let N = dims.y; let K = dims.z;
+  if (row >= M || col >= N) { return; }
+  var acc = 0.0;
+  for (var k = 0u; k < K; k++) {
+    acc += A[row * K + k] * B[k * N + col];
+  }
+  C[row * N + col] = acc;
+}
+`;
+
+// WGSL shader for 1-bit dequant + GEMM
+const ONEBIT_SHADER = /* wgsl */`
+@group(0) @binding(0) var<storage, read> packed: array<u32>; // packed bits [O * in/32]
+@group(0) @binding(1) var<storage, read> scales: array<f32>; // [O * nGroups]
+@group(0) @binding(2) var<storage, read> x: array<f32>;      // input [in]
+@group(0) @binding(3) var<storage, read_write> out: array<f32>;
+@group(0) @binding(4) var<uniform> cfg: vec3u; // out, in, groupSize
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let o = gid.x;
+  let OUT = cfg.x; let IN = cfg.y; let G = cfg.z;
+  if (o >= OUT) { return; }
+  let nGroups = IN / G;
+  var acc = 0.0;
+  for (var g = 0u; g < nGroups; g++) {
+    let scale = scales[o * nGroups + g];
+    for (var k = 0u; k < G; k++) {
+      let flat = g * G + k;
+      let wordIdx = o * (IN / 32u) + flat / 32u;
+      let bitPos  = flat % 32u;
+      let bit = (packed[wordIdx] >> bitPos) & 1u;
+      let w = scale * f32(i32(bit) * 2 - 1);
+      acc += w * x[flat];
+    }
+  }
+  out[o] = acc;
+}
+`;
+
+async function runBenchmark() {
+  const M = +document.getElementById('bench-m').value;
+  const N = +document.getElementById('bench-n').value;
+  const K = 128;  // input features
+  log(`Starting benchmark — FP32 GEMM [${M}×${K}] × [${K}×${N}]`);
+
+  if (!device) {
+    log('WebGPU not available — running JS fallback benchmark', 'err');
+    runJSFallbackBench(M, N, K);
+    return;
+  }
+
+  try {
+    // ── FP32 GEMM ────────────────────────────────────────────────────────
+    const A = new Float32Array(M * K).map(() => Math.random());
+    const B = new Float32Array(K * N).map(() => Math.random());
+    const C = new Float32Array(M * N);
+
+    const bufA = device.createBuffer({ size: A.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const bufB = device.createBuffer({ size: B.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const bufC = device.createBuffer({ size: C.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    const bufDims = device.createBuffer({ size: 12, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+    device.queue.writeBuffer(bufA, 0, A);
+    device.queue.writeBuffer(bufB, 0, B);
+    device.queue.writeBuffer(bufDims, 0, new Uint32Array([M, N, K]));
+
+    const shaderModule = device.createShaderModule({ code: GEMM_SHADER });
+    const pipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: shaderModule, entryPoint: 'main' },
+    });
+    const bg = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: bufA } },
+        { binding: 1, resource: { buffer: bufB } },
+        { binding: 2, resource: { buffer: bufC } },
+        { binding: 3, resource: { buffer: bufDims } },
+      ],
+    });
+
+    // Warm up
+    for (let i = 0; i < 3; i++) {
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pipeline); pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(Math.ceil(M/16), Math.ceil(N/16));
+      pass.end();
+      device.queue.submit([enc.finish()]);
+    }
+    await device.queue.onSubmittedWorkDone();
+
+    const RUNS = 10;
+    const t0 = performance.now();
+    for (let i = 0; i < RUNS; i++) {
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pipeline); pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(Math.ceil(M/16), Math.ceil(N/16));
+      pass.end();
+      device.queue.submit([enc.finish()]);
+    }
+    await device.queue.onSubmittedWorkDone();
+    const fp32Ms = (performance.now() - t0) / RUNS;
+    const fp32Gflops = (2 * M * N * K) / (fp32Ms / 1000) / 1e9;
+
+    setBar('fp32', fp32Gflops, `${fp32Gflops.toFixed(1)} GFLOPS`);
+    document.getElementById('s-tps').textContent = fp32Gflops.toFixed(1);
+    log(`FP32 GEMM: ${fp32Ms.toFixed(2)}ms avg = ${fp32Gflops.toFixed(1)} GFLOPS`);
+
+    // ── 1-bit (JS dequant + GPU matmul) ───────────────────────────────────
+    const weights = new Float32Array(M * K).map(() => (Math.random() - 0.5) * 0.02);
+    const q = quantizeQ1_0_g128(weights, M, K);
+    const deqW = dequantizeQ1_0_g128(q);
+    const bufW = device.createBuffer({ size: deqW.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(bufW, 0, deqW);
+
+    const bg2 = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: bufA } },
+        { binding: 1, resource: { buffer: bufW } },
+        { binding: 2, resource: { buffer: bufC } },
+        { binding: 3, resource: { buffer: bufDims } },
+      ],
+    });
+
+    const t1 = performance.now();
+    for (let i = 0; i < RUNS; i++) {
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pipeline); pass.setBindGroup(0, bg2);
+      pass.dispatchWorkgroups(Math.ceil(M/16), Math.ceil(N/16));
+      pass.end();
+      device.queue.submit([enc.finish()]);
+    }
+    await device.queue.onSubmittedWorkDone();
+    const oneBitMs = (performance.now() - t1) / RUNS;
+    const oneBitGflops = (2 * M * N * K) / (oneBitMs / 1000) / 1e9;
+
+    setBar('1bit', oneBitGflops, `${oneBitGflops.toFixed(1)} GFLOPS`);
+    log(`1-bit (dequant+GPU): ${oneBitMs.toFixed(2)}ms avg = ${oneBitGflops.toFixed(1)} GFLOPS`);
+
+    // ── XNOR simulation (JS) ───────────────────────────────────────────────
+    const xnorT = performance.now();
+    for (let r = 0; r < RUNS; r++) {
+      const inp = new Float32Array(K).map(() => Math.random());
+      simulateXNOR(q, inp, M, K);
+    }
+    const xnorMs = (performance.now() - xnorT) / RUNS;
+    const xnorGflops = (M * K) / (xnorMs / 1000) / 1e9 * 32; // popcount ~32 ops
+    setBar('xnor', Math.min(xnorGflops, fp32Gflops * 3), `${xnorGflops.toFixed(2)} GFLOPS`);
+    log(`XNOR sim (JS): ${xnorMs.toFixed(2)}ms avg`);
+
+    document.getElementById('bench-note').textContent =
+      `Speedup — 1-bit vs FP32: ${(oneBitGflops/fp32Gflops).toFixed(2)}× (GPU dequant)`;
+
+  } catch (e) {
+    log(`Benchmark error: ${e.message}`, 'err');
+  }
+}
+
+function simulateXNOR(q, x, out_f, in_f) {
+  // JS XNOR+popcount simulation (educational — not hardware optimised)
+  const result = new Float32Array(out_f);
+  const bytes_per_row = Math.ceil(in_f / 8);
+  const x_bin = new Uint8Array(Math.ceil(in_f / 8));
+  // quantize x to binary
+  for (let i = 0; i < in_f; i++) {
+    if (x[i] >= 0) x_bin[Math.floor(i/8)] |= (1 << (i%8));
+  }
+  for (let o = 0; o < out_f; o++) {
+    let count = 0;
+    for (let b = 0; b < bytes_per_row; b++) {
+      const xnor = ~(q.bits[o * bytes_per_row + b] ^ x_bin[b]) & 0xFF;
+      // popcount via lookup
+      count += popcount8(xnor);
+    }
+    result[o] = 2 * count - in_f; // map [0,N]→[-N,N]
+  }
+  return result;
+}
+
+function popcount8(v) {
+  v = v - ((v >> 1) & 0x55);
+  v = (v & 0x33) + ((v >> 2) & 0x33);
+  return ((v + (v >> 4)) & 0x0f);
+}
+
+function setBar(id, val, label) {
+  const maxGflops = 200;
+  const pct = Math.min(100, (val / maxGflops) * 100);
+  document.getElementById(`bar-${id}`).style.width = pct + '%';
+  document.getElementById(`val-${id}`).textContent = label;
+}
+
+function runJSFallbackBench(M, N, K) {
+  const A = new Float32Array(M * K).map(() => Math.random());
+  const B = new Float32Array(K * N).map(() => Math.random());
+  const t = performance.now();
+  const C = new Float32Array(M * N);
+  for (let r = 0; r < M; r++)
+    for (let c = 0; c < N; c++) {
+      let s = 0;
+      for (let k = 0; k < K; k++) s += A[r*K+k] * B[k*N+c];
+      C[r*N+c] = s;
+    }
+  const ms = performance.now() - t;
+  const gflops = (2 * M * N * K) / (ms / 1000) / 1e9;
+  setBar('fp32', gflops, `${gflops.toFixed(3)} GFLOPS (JS)`);
+  log(`JS fallback FP32: ${ms.toFixed(1)}ms = ${gflops.toFixed(3)} GFLOPS`);
+}
+
+document.getElementById('btn-bench').onclick = runBenchmark;
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+(async () => {
+  await initWebGPU();
+  randomizeWeights();
+  resetAttn();
+  renderDequant(false);
+  log('ResAbit playground ready — Q1_0_g128 + Attention Residuals');
+})();
+
+window.addEventListener('resize', () => { renderAttn(); });
+
+// ═══════════════════════════════════════════════════════════════
+//  Chat — connects to playground/server.py on localhost:8000
+// ═══════════════════════════════════════════════════════════════
+
+const SERVER = 'http://127.0.0.1:8000';
+
+const statusBadge   = document.getElementById('model-status-badge');
+const chatMessages  = document.getElementById('chat-messages');
+const chatPlaceholder = document.getElementById('chat-placeholder');
+const btnGenerate   = document.getElementById('btn-generate');
+const btnStop       = document.getElementById('btn-stop');
+const chatPrompt    = document.getElementById('chat-prompt');
+const chatTps       = document.getElementById('chat-tps');
+const maxTokensSlider = document.getElementById('max-tokens');
+const maxTokensVal  = document.getElementById('max-tokens-val');
+const temperatureSlider = document.getElementById('temperature');
+const tempValEl     = document.getElementById('temp-val');
+
+maxTokensSlider.addEventListener('input', () => { maxTokensVal.textContent = maxTokensSlider.value; });
+temperatureSlider.addEventListener('input', () => { tempValEl.textContent = temperatureSlider.value; });
+
+let stopGeneration = false;
+let currentReader  = null;
+
+// ── server health polling ─────────────────────────────────────
+async function pollServer() {
+  try {
+    const r = await fetch(`${SERVER}/status`, { signal: AbortSignal.timeout(2000) });
+    const d = await r.json();
+    if (d.state === 'ready') {
+      statusBadge.textContent = `ready · ${d.params_m}M params · ${d.device}`;
+      statusBadge.style.background = '#1a3a20';
+      statusBadge.style.color = 'var(--green)';
+      btnGenerate.disabled = false;
+      chatPlaceholder && (chatPlaceholder.style.display = 'none');
+      log(`Model server ready — ${d.params_m}M params on ${d.device}`);
+      return true;
+    } else {
+      statusBadge.textContent = `${d.state}: ${d.message}`;
+      statusBadge.style.background = '#2a2d3a';
+      statusBadge.style.color = 'var(--orange)';
+      return false;
+    }
+  } catch {
+    statusBadge.textContent = 'server offline';
+    statusBadge.style.background = '#2a2d3a';
+    statusBadge.style.color = 'var(--muted)';
+    btnGenerate.disabled = true;
+    return false;
+  }
+}
+
+// Poll until ready, then every 10s to detect crashes
+(async () => {
+  let ready = false;
+  while (!ready) {
+    ready = await pollServer();
+    if (!ready) await new Promise(r => setTimeout(r, 2000));
+  }
+  setInterval(pollServer, 10000);
+})();
+
+// ── render helpers ────────────────────────────────────────────
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.style.cssText = `margin-bottom:14px;`;
+  const label = document.createElement('span');
+  label.style.cssText = `font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+    color:${role === 'user' ? 'var(--accent)' : 'var(--accent2)'};margin-right:8px`;
+  label.textContent = role === 'user' ? 'You' : 'ResAbit';
+  const content = document.createElement('span');
+  content.className = 'msg-content';
+  content.textContent = text;
+  div.append(label, content);
+  chatMessages.appendChild(div);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  return content;  // return span so we can stream into it
+}
+
+// ── generate ──────────────────────────────────────────────────
+btnGenerate.addEventListener('click', async () => {
+  const prompt = chatPrompt.value.trim();
+  if (!prompt) return;
+
+  chatPlaceholder && (chatPlaceholder.style.display = 'none');
+  chatPrompt.value = '';
+  addMessage('user', prompt);
+  const outputSpan = addMessage('model', '');
+
+  btnGenerate.disabled = true;
+  btnStop.style.display = 'inline-block';
+  stopGeneration = false;
+  chatTps.textContent = '';
+
+  try {
+    const resp = await fetch(`${SERVER}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        max_new_tokens: parseInt(maxTokensSlider.value),
+        temperature: parseFloat(temperatureSlider.value),
+        top_p: 0.9,
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json();
+      outputSpan.textContent = `Error: ${err.error}`;
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    currentReader = reader;
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+
+    while (true) {
+      if (stopGeneration) { reader.cancel(); break; }
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') break;
+        try {
+          const d = JSON.parse(payload);
+          if (d.error) { outputSpan.textContent += `\n[Error: ${d.error}]`; break; }
+          text += d.token;
+          outputSpan.textContent = text;
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+          if (d.tps) chatTps.textContent = `${d.tps} tok/s`;
+        } catch { /* skip malformed */ }
+      }
+    }
+  } catch (e) {
+    outputSpan.textContent += ` [${e.message}]`;
+  } finally {
+    btnGenerate.disabled = false;
+    btnStop.style.display = 'none';
+    currentReader = null;
+  }
+});
+
+btnStop.addEventListener('click', () => {
+  stopGeneration = true;
+  if (currentReader) currentReader.cancel();
+  btnStop.style.display = 'none';
+  btnGenerate.disabled = false;
+});
+
+// ── enter to submit ───────────────────────────────────────────
+chatPrompt.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey && !btnGenerate.disabled) {
+    e.preventDefault();
+    btnGenerate.click();
+  }
+});
+</script>
+</body>
+</html>
