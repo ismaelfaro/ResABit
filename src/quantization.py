@@ -94,28 +94,41 @@ def _int8_gemm(
     original_shape: tuple,
 ) -> torch.Tensor:
     """
-    INT8 GEMM using torch._int_mm (backed by oneDNN/MKL/OpenBLAS INT8 path).
-    Result is accumulated in int32, then rescaled to float32.
+    Group-wise INT8 GEMM for Q1_0_g128.
 
-    w_i = ±1 in INT8, so the matmul is exact; scale is applied afterwards.
+    Q1_0_g128 stores one FP16 scale per group of `group_size` weights, so the
+    scale varies *within* a single output row and CANNOT be factored out of the
+    full inner-product sum. We therefore accumulate per group:
+
+        out[t, o] = x_scale[t] · Σ_g w_scales[o, g] · Σ_{i∈g} x_int8[t, i]·w_int8[o, i]
+
+    Each group's exact ±1 INT8 matmul (via torch._int_mm, backed by
+    oneDNN/MKL/OpenBLAS; FP fallback where unavailable) is rescaled by that
+    group's scale before being summed. This is mathematically correct, unlike
+    collapsing all group scales to a single per-row mean.
     """
     BT, in_f = x_int8.shape
     out_f = w_int8.shape[0]
     num_groups = in_f // group_size
 
-    # INT8 GEMM: [B*T, in] × [in, out] → [B*T, out] int32
-    # torch._int_mm requires contiguous inputs and out ≥ 16 (MKL constraint)
-    try:
-        out_i32 = torch._int_mm(x_int8.contiguous(), w_int8.T.contiguous())  # [BT, out]
-    except Exception:
-        # Fallback: cast to float and use F.linear (safe on all platforms)
-        out_i32 = (x_int8.float() @ w_int8.float().T)
+    x_g = x_int8.view(BT, num_groups, group_size)        # [BT, G, gs]
+    w_g = w_int8.view(out_f, num_groups, group_size)     # [out, G, gs]
 
-    # Rescale: result = int_out * x_scale * w_scale_per_col
-    # w_scales: [out, G] → approximate as mean per output row for simplicity
-    # (exact per-group scaling would need a [out, G, group_size] scatter)
-    w_scale_per_row = w_scales.mean(dim=1, keepdim=True).T  # [1, out]
-    out_f32 = out_i32.float() * x_scale * w_scale_per_row    # [BT, out]
+    out_f32 = x_int8.new_zeros((BT, out_f), dtype=torch.float32)
+    for g in range(num_groups):
+        xs = x_g[:, g, :].contiguous()        # [BT, gs] int8
+        ws = w_g[:, g, :].contiguous()        # [out, gs] int8 (±1)
+        # INT8 GEMM: [BT, gs] × [gs, out] → [BT, out] int32
+        # torch._int_mm requires contiguous inputs and out ≥ 16 (MKL constraint)
+        try:
+            partial = torch._int_mm(xs, ws.T.contiguous()).float()   # [BT, out]
+        except Exception:
+            # Fallback: cast to float (safe on all platforms)
+            partial = xs.float() @ ws.float().T
+        # Apply this group's per-output-row scale, then accumulate.
+        out_f32 = out_f32 + partial * w_scales[:, g].unsqueeze(0)     # [BT, out] × [1, out]
+
+    out_f32 = out_f32 * x_scale              # [BT, out] × [BT, 1]
 
     if bias is not None:
         out_f32 = out_f32 + bias.float()
@@ -178,7 +191,10 @@ class OneBitLinear(nn.Module):
     def _forward_train(self, x: torch.Tensor) -> torch.Tensor:
         w = self.weight.float()
         w_g = w.view(self.out_features, self.num_groups, self.group_size)
-        scales = w_g.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
+        # L2-optimal scale for 1-bit sign quantization is mean(|w|) per group
+        # (BitNet-style), not amax — amax forces every weight to the group's
+        # single largest magnitude, systematically overshooting the other 127.
+        scales = w_g.abs().mean(dim=-1, keepdim=True).clamp(min=1e-8)
         w_eff = (ste_sign(w_g / scales) * scales).view(self.out_features, self.in_features)
         bias = self.bias.float() if self.bias is not None else None
         return F.linear(x.float(), w_eff, bias).to(x.dtype)
@@ -213,7 +229,10 @@ class OneBitLinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if not self._quantized:
             return self._forward_train(x)
-        if self.use_int8_gemm and self.weight_int8 is not None:
+        # _forward_int8 builds the ±1 INT8 cache lazily on first use, so we must
+        # NOT gate on `weight_int8 is not None` here — that left the cache None
+        # forever and made the primary INT8 path unreachable dead code.
+        if self.use_int8_gemm:
             return self._forward_int8(x)
         return self._forward_fp32_unpack(x)
 
@@ -234,7 +253,9 @@ class OneBitLinear(nn.Module):
         out, inp = w.shape
         w_g = w.view(out, self.num_groups, self.group_size)
 
-        scales = w_g.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)  # [O, G, 1]
+        # mean(|w|) per group — must match the scale used by _forward_train so
+        # that the frozen weights reproduce the training-time STE forward.
+        scales = w_g.abs().mean(dim=-1, keepdim=True).clamp(min=1e-8)  # [O, G, 1]
         signs = w_g.sign().clamp(min=0)    # -1,0→0; +1→1  (0→1 by convention)
 
         # ── packed bits (int8, LSB-first) ──────────────────────────────────

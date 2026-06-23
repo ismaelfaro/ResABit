@@ -93,6 +93,35 @@ def _():
     assert rel_err < 1.0, f"Relative error too large: {rel_err:.4f}"
 
 
+@test("OneBitLinear: int8 GEMM path applies per-group scales (matches fp32 unpack)")
+def _():
+    torch.manual_seed(0)
+    in_f, out_f, G = 256, 64, 128          # two groups per output row
+    layer = OneBitLinear(in_f, out_f, group_size=G)
+
+    # Make the two groups wildly different in magnitude. If per-group scales
+    # were collapsed to a single per-row mean (the old bug), the int8 path would
+    # diverge badly from the correct fp32-unpack path.
+    with torch.no_grad():
+        w = layer.weight.view(out_f, 2, G).clone()
+        w[:, 0, :] = torch.randn(out_f, G) * 0.01     # tiny-magnitude group
+        w[:, 1, :] = torch.randn(out_f, G) * 10.0      # large-magnitude group
+        layer.weight.copy_(w.view(out_f, in_f))
+    layer.quantize()
+
+    x = torch.randn(2, 8, in_f)
+
+    layer.use_int8_gemm = True
+    out_int8 = layer(x).detach()           # builds ±1 int8 cache lazily
+    layer.use_int8_gemm = False
+    out_fp32 = layer(x).detach()
+
+    # The only difference between the paths is INT8 activation quantisation,
+    # so outputs should agree to within a few percent.
+    rel_err = (out_int8 - out_fp32).abs().mean() / out_fp32.abs().mean().clamp(min=1e-6)
+    assert rel_err < 0.05, f"int8 vs fp32-unpack rel err too large: {rel_err:.4f}"
+
+
 @test("OneBitLinear: STE gradient flows through sign")
 def _():
     layer = OneBitLinear(128, 32, group_size=128)
