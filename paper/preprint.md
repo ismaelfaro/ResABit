@@ -127,8 +127,11 @@ intervention and is declared as such.
 `fp32`, `fp32_ar`, `onebit`, `onebit_ar`.
 
 **The FP32 arms are fine-tuned too**, on the same data for the same steps.
-Comparing a fine-tuned 1-bit model against an un-fine-tuned FP32 model
-charges quantization for a domain-adaptation gap.
+A fine-tuned 1-bit model compared against an un-fine-tuned FP32 model
+collects a domain-adaptation bonus the reference never received. On our
+runs that understates binarization damage by 0.535 nats: Qwen1.5-0.5B-Chat
+scores 25.005 perplexity on wikitext-2 as shipped and 14.653 after the same
+recovery budget the 1-bit arms get.
 
 **Budget.** 300 optimizer steps x 4096 tokens = 1.23M tokens of
 wikitext-2-raw train, identical order across arms. Fixed tokens rather than

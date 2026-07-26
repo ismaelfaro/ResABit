@@ -4,9 +4,9 @@ Protocol
 --------
 Every arm starts from the same pretrained Qwen1.5-0.5B-Chat weights and gets
 an identical token budget in an identical order. The FP32 arms are
-fine-tuned too -- comparing a fine-tuned 1-bit model against an
-un-fine-tuned FP32 one would credit quantization for a domain-adaptation
-gap.
+fine-tuned too: a fine-tuned 1-bit model measured against an un-fine-tuned
+FP32 one collects a domain-adaptation bonus the reference never got, which
+understates the quantization gap.
 
 Seeds are paired: arm A and arm B see the same seed set, so the per-seed
 difference cancels the variance they share (init draw, data order) and the

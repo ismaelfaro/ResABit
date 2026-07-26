@@ -26,7 +26,15 @@ Two changes fix it:
 
 **The FP32 arm is fine-tuned too.** Same data, same steps, same order. It is
 `FP32 + identical recovery`, not `FP32 as shipped`. Otherwise the 1-bit arms
-absorb a domain-adaptation penalty that has nothing to do with quantization.
+collect a domain-adaptation bonus the reference never got, and the
+quantization gap is measured against the wrong thing.
+
+Measured, once the runs came in: Qwen1.5-0.5B-Chat scores 25.005 perplexity
+on wikitext-2 as shipped and 14.653 after the same 1.23M-token recovery the
+1-bit arms receive. So the naive comparison **understates** binarization
+damage -- 2.430 nats against the shipped model versus 2.965 nats against the
+matched baseline, a factor of 1.7 in the perplexity ratio. An earlier draft
+of this document had that direction backwards.
 
 **A fourth arm: FP32 + AR.** Without it you cannot separate *"AR helps"* from
 *"AR helps specifically under binarization"*. Only the second is interesting,
