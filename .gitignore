@@ -37,3 +37,8 @@ logs/
 # Temp
 tmp/
 temp/
+
+# Experiment artifacts
+results/
+checkpoints/
+.venv-mlx/
