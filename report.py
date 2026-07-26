@@ -273,6 +273,43 @@ def alpha_trajectory(by_arm) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+def alpha_by_depth(by_arm) -> str | None:
+    """Where in the stack the residual pathway actually gets used.
+
+    The accumulator grows with depth by construction, so a uniform gate
+    would already mean a deeper effect at deeper layers. What the per-layer
+    profile adds is direction: a gate that goes negative is being used to
+    damp the residual stream rather than to enrich it, which is the opposite
+    of the mechanism's stated purpose.
+    """
+    blocks = []
+    for arm in ("onebit_ar", "fp32_ar"):
+        rows = [r for r in by_arm.get(arm, []) if r.get("alphas")]
+        if not rows:
+            continue
+        alphas = np.array([r["alphas"] for r in rows])       # [seeds, layers]
+        mean = alphas.mean(axis=0)
+        n_layers = len(mean)
+        thirds = [
+            ("early", mean[1 : n_layers // 3]),               # layer 0 is inert
+            ("middle", mean[n_layers // 3 : 2 * n_layers // 3]),
+            ("late", mean[2 * n_layers // 3 :]),
+        ]
+        summary = ", ".join(f"{name} {seg.mean():+.4f}" for name, seg in thirds)
+        negative = int((mean[1:] < 0).sum())
+        blocks.append(
+            f"- `{arm}` ({len(rows)} seed(s)): {summary}. "
+            f"{negative}/{n_layers - 1} live gates are negative"
+            + (
+                " — the pathway is being used to damp the residual stream, "
+                "not to enrich it."
+                if negative > (n_layers - 1) * 0.6
+                else "."
+            )
+        )
+    return "\n".join(blocks) if blocks else None
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--write-readme", action="store_true")
@@ -290,6 +327,8 @@ def main() -> None:
         parts += ["", "### Derived quantities", "", inter]
     if traj := alpha_trajectory(by_arm):
         parts += ["", "### Gate trajectories", "", traj]
+    if depth := alpha_by_depth(by_arm):
+        parts += ["", "### Gate profile by depth", "", depth]
 
     body = "\n".join(parts)
     print(body)
