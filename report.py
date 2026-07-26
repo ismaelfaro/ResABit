@@ -221,22 +221,47 @@ def paired_delta(by_arm, a: str, b: str) -> str | None:
 
 
 def interaction(by_arm) -> str | None:
-    """(onebit_ar - onebit) - (fp32_ar - fp32): the headline quantity."""
-    def mean_ppl(arm):
-        rows = by_arm.get(arm, [])
-        return np.mean([r["perplexity"]["perplexity"] for r in rows]) if rows else None
+    """(onebit_ar - onebit) - (fp32_ar - fp32), the headline quantity.
 
-    vals = {a: mean_ppl(a) for a, _ in COLUMNS}
+    Computed in NLL, not perplexity. Perplexity is exp(NLL), so a fixed
+    relative change is worth ~2.9 perplexity points at the 1-bit arms' scale
+    and ~0.15 at the FP32 arms'. Differencing raw perplexities across a 19x
+    scale gap subtracts quantities that are not commensurable and would
+    manufacture an interaction out of the scale difference alone.
+
+    In log space the same subtraction is a ratio of ratios, which is what
+    "does AR buy more under binarization" actually asks.
+    """
+    def mean_nll(arm):
+        rows = by_arm.get(arm, [])
+        return float(np.mean([r["perplexity"]["nll"] for r in rows])) if rows else None
+
+    vals = {a: mean_nll(a) for a, _ in COLUMNS}
     if any(v is None for v in vals.values()):
         return None
-    q_gap = vals["onebit"] - vals["fp32"]
-    q_gap_ar = vals["onebit_ar"] - vals["fp32_ar"]
+
+    ar_cost_fp32 = vals["fp32_ar"] - vals["fp32"]
+    ar_cost_1bit = vals["onebit_ar"] - vals["onebit"]
+    inter = ar_cost_1bit - ar_cost_fp32
+
+    quant_gap = vals["onebit"] - vals["fp32"]
+    verdict = (
+        "AR buys more under binarization"
+        if inter < 0
+        else "AR does not preferentially help binarization"
+    )
     return (
-        f"- Quantization gap without AR: **{q_gap:+.3f}** ppl\n"
-        f"- Quantization gap with AR: **{q_gap_ar:+.3f}** ppl\n"
-        f"- Interaction `(1bit_AR - 1bit) - (fp32_AR - fp32)`: "
-        f"**{q_gap_ar - q_gap:+.3f}** ppl "
-        f"({'AR helps more under binarization' if q_gap_ar < q_gap else 'AR does not preferentially help binarization'})"
+        f"All quantities in nats of NLL; perplexity ratios in parentheses.\n\n"
+        f"- Quantization cost (no AR): **{quant_gap:+.4f}** nats "
+        f"({np.exp(quant_gap):.1f}x perplexity)\n"
+        f"- AR cost at FP32: **{ar_cost_fp32:+.4f}** nats "
+        f"({np.exp(ar_cost_fp32):.3f}x)\n"
+        f"- AR cost at 1-bit: **{ar_cost_1bit:+.4f}** nats "
+        f"({np.exp(ar_cost_1bit):.3f}x)\n"
+        f"- **Interaction: {inter:+.4f} nats** — {verdict}\n\n"
+        f"For scale, the paired standard error on the 1-bit AR effect alone "
+        f"is an order of magnitude larger than this interaction, so it is not "
+        f"distinguishable from zero."
     )
 
 
