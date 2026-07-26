@@ -31,7 +31,7 @@ COLUMNS = [
 def _rows(stage: str | None) -> list[dict]:
     if not LEDGER.exists():
         return []
-    rows = [json.loads(l) for l in LEDGER.read_text().splitlines() if l.strip()]
+    rows = [json.loads(line) for line in LEDGER.read_text().splitlines() if line.strip()]
     rows = [r for r in rows if r["status"] != "crash" and r.get("perplexity")]
     return [r for r in rows if stage is None or r["stage"] == stage]
 
@@ -99,7 +99,7 @@ def build_table(by_arm: dict[str, list[dict]]) -> str:
     if not present:
         return "*No completed runs in the ledger yet.*"
 
-    header = "| metric | " + " | ".join(l for _, l in present) + " |"
+    header = "| metric | " + " | ".join(label for _, label in present) + " |"
     sep = "|---" * (len(present) + 1) + "|"
     lines = [header, sep]
 

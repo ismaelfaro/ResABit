@@ -16,7 +16,6 @@ import torch
 from src.data import make_strided_windows, make_training_windows
 from src.evaluate import evaluate_perplexity
 
-
 # -- training windows -----------------------------------------------------
 
 
@@ -44,7 +43,7 @@ def test_strided_windows_score_each_token_exactly_once():
     windows = make_strided_windows(tokens, max_length=100, stride=50)
 
     scored: list[int] = []
-    for inputs, labels in windows:
+    for _inputs, labels in windows:
         scored += labels[labels != -100].tolist()
 
     assert len(scored) == len(set(scored)), "a token was scored twice"
@@ -243,7 +242,7 @@ def test_padding_does_not_change_a_score():
     alone = [_score_batch(model, [r], device)[0] for r in requests]
     together = _score_batch(model, requests, device)
 
-    for (solo, _), (batched, _) in zip(alone, together):
+    for (solo, _), (batched, _) in zip(alone, together, strict=True):
         assert solo == pytest.approx(batched, abs=1e-5)
 
 

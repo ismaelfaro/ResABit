@@ -31,7 +31,7 @@ import json
 import platform
 import subprocess
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import mlx.core as mx

@@ -16,8 +16,6 @@ This module is the correctness reference. Training runs use the MLX port in
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -124,9 +122,9 @@ class Attention(nn.Module):
     def forward(
         self,
         hidden: torch.Tensor,
-        past_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
         use_cache: bool = False,
-    ) -> tuple[torch.Tensor, Optional[tuple[torch.Tensor, torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         B, T, _ = hidden.shape
 
         q = self.q_proj(hidden).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
@@ -207,8 +205,8 @@ class DecoderLayer(nn.Module):
     def forward(
         self,
         hidden: torch.Tensor,
-        residual_acc: Optional[torch.Tensor] = None,
-        past_kv: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
+        residual_acc: torch.Tensor | None = None,
+        past_kv: tuple[torch.Tensor, torch.Tensor] | None = None,
         use_cache: bool = False,
     ):
         attn_out, present = self.self_attn(
@@ -252,8 +250,8 @@ class ResABitForCausalLM(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        labels: Optional[torch.Tensor] = None,
-        past_key_values: Optional[list] = None,
+        labels: torch.Tensor | None = None,
+        past_key_values: list | None = None,
         use_cache: bool = False,
     ) -> dict:
         hidden = self.embed_tokens(input_ids)
@@ -261,7 +259,7 @@ class ResABitForCausalLM(nn.Module):
         past_key_values = past_key_values or [None] * len(self.layers)
         present: list = [] if use_cache else []
 
-        for layer, past in zip(self.layers, past_key_values):
+        for layer, past in zip(self.layers, past_key_values, strict=True):
             hidden, residual_acc, kv = layer(hidden, residual_acc, past, use_cache)
             if use_cache:
                 present.append(kv)
@@ -316,7 +314,7 @@ class ResABitForCausalLM(nn.Module):
         max_new_tokens: int = 128,
         temperature: float = 0.7,
         top_p: float = 0.9,
-        eos_token_id: Optional[int] = None,
+        eos_token_id: int | None = None,
     ) -> torch.Tensor:
         self.eval()
         eos = eos_token_id if eos_token_id is not None else self.config.eos_token_id

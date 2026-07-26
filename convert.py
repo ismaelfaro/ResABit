@@ -22,16 +22,19 @@ from src.quantization import OneBitLinear, quantize_model_weights
 
 
 def checkpoint_bytes(model) -> int:
-    total = 0
+    total, seen = 0, set()
     for module in model.modules():
         if isinstance(module, OneBitLinear):
             total += module.storage_bytes()
-    seen = set()
-    for name, param in model.named_parameters():
-        if "OneBitLinear" in type(param).__name__ or id(param) in seen:
             continue
-        seen.add(id(param))
-        total += param.numel() * param.element_size()
+        # recurse=False, so a parameter is attributed to the module that
+        # owns it and a OneBitLinear's tensors are never reached here. The
+        # id() set catches tied embeddings, which appear under two names.
+        for param in module.parameters(recurse=False):
+            if id(param) in seen:
+                continue
+            seen.add(id(param))
+            total += param.numel() * param.element_size()
     return total
 
 

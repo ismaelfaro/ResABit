@@ -18,9 +18,9 @@ import torch
 
 mx = pytest.importorskip("mlx.core")
 
-from src.config import ModelConfig                       # noqa: E402
+from src.config import ModelConfig  # noqa: E402
 from src.loader import load_hf_state_dict, load_pretrained  # noqa: E402
-from src.mlx_backend import load_mlx_pretrained          # noqa: E402
+from src.mlx_backend import load_mlx_pretrained  # noqa: E402
 
 pytestmark = pytest.mark.slow
 

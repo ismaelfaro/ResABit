@@ -21,7 +21,7 @@ Setting both to False reproduces stock Qwen1.5-0.5B exactly, which is what
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 
 
 @dataclass
@@ -106,6 +106,6 @@ class ModelConfig:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "ModelConfig":
+    def from_dict(cls, d: dict) -> ModelConfig:
         fields = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in d.items() if k in fields})

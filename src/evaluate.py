@@ -19,7 +19,7 @@ Teacher divergence
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -137,7 +137,7 @@ def _score_batch(
     logits = model(input_ids=padded)["logits"].float()
 
     out = []
-    for row, ((ids, cont_len), length) in enumerate(zip(requests, lengths)):
+    for row, ((ids, cont_len), length) in enumerate(zip(requests, lengths, strict=True)):
         if cont_len <= 0:
             out.append((float("-inf"), False))
             continue
@@ -188,18 +188,18 @@ def evaluate_multiple_choice(
         range(0, len(order), batch_size), desc=task.name, disable=not progress
     ):
         chunk = order[start : start + batch_size]
-        for index, result in zip(chunk, _score_batch(model, [requests[i] for i in chunk], device)):
+        for index, result in zip(chunk, _score_batch(model, [requests[i] for i in chunk], device), strict=True):
             scored[index] = result
 
     per_item: list[list[tuple[float, bool]]] = [[] for _ in range(total)]
-    for owner, result in zip(owners, scored):
+    for owner, result in zip(owners, scored, strict=True):
         per_item[owner].append(result)
 
     n_correct = n_correct_norm = 0
     for i, results in enumerate(per_item):
         scores = [s for s, _ in results]
         norms = [
-            s / max(len(choice), 1) for (s, _), choice in zip(results, task.choices[i])
+            s / max(len(choice), 1) for (s, _), choice in zip(results, task.choices[i], strict=True)
         ]
         if len(scores) == 1:
             n_correct += int(results[0][1])

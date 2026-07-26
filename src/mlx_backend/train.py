@@ -29,7 +29,7 @@ Effective learning-rate gain on the residual gates
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 
 import mlx.core as mx
 import mlx.nn as nn
