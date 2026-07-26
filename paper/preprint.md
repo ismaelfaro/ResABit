@@ -300,6 +300,18 @@ with the pathway is cancel it. It supplies a nuisance to be damped rather
 than signal to be used, which is consistent with the arm being no better and
 less stable.
 
+**The FP32 arm does the same thing**, which settles what the damping is a
+response to. `fp32_ar` also converges 22 of 23 gates negative (early −0.019,
+middle −0.015, late −0.009). So the suppression is not a reaction to
+binarization damage; it is what the architecture elicits in either regime.
+
+What quantization changes is the magnitude. Final mean |alpha| is 0.053 in
+the 1-bit arm against 0.015 in FP32 — the damaged model pushes the gates
+roughly 3.5x harder negative. This is an independent line of evidence
+against the hypothesis: if the pathway were repairing quantization damage we
+would expect positive gates growing with damage, and what we observe is
+negative gates growing with damage.
+
 **This is not RaBiT's inter-path adaptation.** That failure mode predicts
 gates that grow and then collapse toward zero as parallel paths co-adapt
 into redundancy. Here they rise and hold at a stable negative value. The
