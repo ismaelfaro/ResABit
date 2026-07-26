@@ -272,3 +272,20 @@ Followed by the two derived quantities that are the actual result:
 - **MLX Metal matmul is not true FP32** (~bf16-grade accumulation). Training
   uses it; every reported metric is computed in PyTorch. This is why the two
   backends exist.
+
+---
+
+## 9. Structural note: only 23 of the 24 gates are live
+
+Layer 0 receives an empty accumulator (`R_{-1} = 0`), so its gate is never
+applied and carries no gradient — confirmed in
+`tests/test_parity.py::test_first_layer_gate_is_structurally_inert`.
+
+This is correct: there is no prior attention to re-inject at the first
+layer. But it means any statistic over `alpha` must exclude index 0, or it
+reports a mean dragged toward zero by a parameter that could not have moved.
+`report.py` averages over layers 1 and up.
+
+It also slightly weakens the intervention relative to how it is usually
+described: the accumulator only begins contributing at layer 1, so the
+"every layer sees all previous attention" framing is off by one.

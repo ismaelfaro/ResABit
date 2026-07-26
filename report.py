@@ -107,17 +107,20 @@ def build_table(by_arm: dict[str, list[dict]]) -> str:
         + " |"
     )
 
+    # Layer 0's gate is structurally inert: R_{-1} = 0, so it is never
+    # applied and its gradient is exactly zero. Including it would drag the
+    # reported mean toward zero and understate the live gates.
     alpha_cells = []
     for k, _ in present:
-        alphas = [r["alphas"] for r in by_arm[k] if r.get("alphas")]
+        alphas = [r["alphas"][1:] for r in by_arm[k] if r.get("alphas")]
         if not alphas:
             alpha_cells.append("—")
         else:
             flat = np.array(alphas)
-            alpha_cells.append(
-                f"{flat.mean():+.4f} / {np.abs(flat).max():.4f}"
-            )
-    lines.append("| learned alpha, mean / max | " + " | ".join(alpha_cells) + " |")
+            alpha_cells.append(f"{flat.mean():+.4f} / {np.abs(flat).max():.4f}")
+    lines.append(
+        "| learned alpha, mean / max (layers 1+) | " + " | ".join(alpha_cells) + " |"
+    )
 
     row("seeds", lambda r: [len(r)], "{:.0f}")
     row("wall-clock per run (s)", lambda r: _get(r, "wall_seconds"), "{:.0f}")

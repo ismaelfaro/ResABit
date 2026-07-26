@@ -79,3 +79,28 @@ def test_loader_rejects_incomplete_state_dict(hf_state):
     del broken["model.layers.0.self_attn.q_proj.bias"]
     with pytest.raises(RuntimeError, match="partially mapped"):
         load_pretrained(ModelConfig(), hf_state=broken, verbose=False)
+
+
+def test_first_layer_gate_is_structurally_inert(hf_state):
+    """Layer 0's alpha can never fire, so it must carry no gradient.
+
+    The accumulator enters layer 0 empty (R_{-1} = 0), so the gate is
+    skipped entirely on that layer. This is correct -- there is no prior
+    attention to re-inject -- but it means only N-1 of the N gates are
+    live, and any statistic over alpha must exclude index 0 or it silently
+    reports a mean biased toward zero.
+    """
+    model = load_pretrained(
+        ModelConfig(quantize_linear=False, use_attention_residuals=True),
+        hf_state=hf_state,
+        verbose=False,
+    )
+    out = model(input_ids=_INPUT_IDS, labels=_INPUT_IDS)
+    out["loss"].backward()
+
+    gates = [layer.attn_residual_scale for layer in model.layers]
+    # Never reached by the graph at all, so autograd leaves grad unset.
+    assert gates[0].grad is None, "layer 0 gate participated in the graph"
+    assert any(
+        g.grad is not None and float(g.grad.abs()) > 0 for g in gates[1:]
+    ), "no live gate received gradient"
