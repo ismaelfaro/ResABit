@@ -113,9 +113,14 @@ def build_table(by_arm: dict[str, list[dict]]) -> str:
     row("final train loss", lambda r: _get(r, "train", "final_train_loss"), "{:.4f}")
 
     # Held-out suite: one reference seed per arm, so no spread to report.
-    row("KL to FP32 base (nats)",
+    # The reference is the *shipped* model, chosen so the measurement does
+    # not depend on which arm finished first. Consequence: the FP32 arm's
+    # value is pure fine-tuning drift, and the 1-bit arms carry drift plus
+    # binarization. KL does not decompose additively, so the FP32 row is the
+    # scale of the non-quantization component, not a term to subtract.
+    row("KL to shipped Qwen (nats)",
         lambda r: _get(r, "suite", "divergence", "kl_teacher_student"), "{:.4f}")
-    row("top-1 agreement with base",
+    row("top-1 agreement with shipped Qwen",
         lambda r: _get(r, "suite", "divergence", "top1_agreement"), "{:.4f}")
 
     for task, label in (

@@ -297,3 +297,30 @@ reports a mean dragged toward zero by a parameter that could not have moved.
 It also slightly weakens the intervention relative to how it is usually
 described: the accumulator only begins contributing at layer 1, so the
 "every layer sees all previous attention" framing is off by one.
+
+---
+
+## 10. What the KL column does and does not measure
+
+The divergence reference is Qwen1.5-0.5B-Chat **as shipped**, chosen so the
+measurement does not depend on which arm happened to finish first.
+
+That choice has a consequence worth stating before anyone reads the column
+as "quantization damage". The FP32 arm is also fine-tuned, so its KL of
+1.595 nats (top-1 agreement 0.641) is drift from the recovery run alone,
+with no quantization involved at all. The 1-bit arms sit at 3.958 and 3.979
+nats, which is drift *plus* binarization.
+
+KL does not decompose additively, so 3.958 - 1.595 is not "the quantization
+term". The FP32 row gives the scale of the non-quantization component and
+nothing more precise than that.
+
+What the column *is* valid for is the comparison the ablation needs: all
+arms are measured against the same fixed reference, so differences between
+them are meaningful. `onebit` at 3.958 against `onebit_ar` at 3.979 is a
+like-for-like comparison, and it agrees with the perplexity result in
+finding no advantage for the residual pathway.
+
+A cleaner "quantization damage" number would use the fine-tuned FP32 arm as
+the reference. That requires keeping its weights around, which this sweep
+does not do.
