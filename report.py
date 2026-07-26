@@ -127,26 +127,59 @@ def build_table(by_arm: dict[str, list[dict]]) -> str:
     return "\n".join(lines)
 
 
+_PAIRED_METRICS = (
+    # (label, extractor, unit, lower_is_better)
+    ("wikitext ppl", lambda r: r["perplexity"]["perplexity"], "ppl", True),
+    ("wikitext NLL", lambda r: r["perplexity"]["nll"], "nats", True),
+    ("final train loss", lambda r: r["train"]["final_train_loss"], "nats", True),
+    ("top-1 acc", lambda r: r["perplexity"]["top1_accuracy"], "", False),
+)
+
+
 def paired_delta(by_arm, a: str, b: str) -> str | None:
-    """Per-seed difference b - a, which cancels the variance they share."""
-    sa = {r["seed"]: r["perplexity"]["perplexity"] for r in by_arm.get(a, [])}
-    sb = {r["seed"]: r["perplexity"]["perplexity"] for r in by_arm.get(b, [])}
-    shared = sorted(set(sa) & set(sb))
-    if len(shared) < 2:
+    """Per-seed difference b - a, which cancels the variance they share.
+
+    Reported on several metrics rather than one. Perplexity is an
+    exponential of the mean NLL, so it exaggerates spread in the damaged
+    regime; if the sign of the effect disagrees between ppl and NLL, that is
+    a signal the result is being driven by a single bad window rather than
+    by a consistent shift.
+    """
+    lines, shared = [], None
+    for label, extract, unit, lower_better in _PAIRED_METRICS:
+        try:
+            sa = {r["seed"]: extract(r) for r in by_arm.get(a, [])}
+            sb = {r["seed"]: extract(r) for r in by_arm.get(b, [])}
+        except (KeyError, TypeError):
+            continue
+        keys = sorted(set(sa) & set(sb))
+        if len(keys) < 2:
+            continue
+        shared = keys
+        d = np.array([sb[s] - sa[s] for s in keys])
+        mean, se = float(d.mean()), float(d.std(ddof=1) / np.sqrt(len(d)))
+
+        if abs(mean) < 2 * se:
+            verdict = "within noise"
+        elif (mean < 0) == lower_better:
+            verdict = f"**{b} better**"
+        else:
+            verdict = f"**{b} worse**"
+        digits = 4 if unit != "ppl" else 3
+        lines.append(
+            f"| {label} | {np.round(d, digits).tolist()} | "
+            f"{mean:+.{digits}f} | {se:.{digits}f} | {verdict} |"
+        )
+
+    if not lines:
         return None
-    d = np.array([sb[s] - sa[s] for s in shared])
-    mean, se = float(d.mean()), float(d.std(ddof=1) / np.sqrt(len(d)))
-    verdict = (
-        "**within the noise floor — no measurable effect**"
-        if abs(mean) < 2 * se
-        else (f"**{b} is better** by {abs(mean):.3f} ppl"
-              if mean < 0 else f"**{b} is worse** by {abs(mean):.3f} ppl")
+    header = (
+        f"`{b}` minus `{a}`, paired over seeds {shared}. "
+        f"Decision rule fixed in advance: an effect smaller than 2 SE is "
+        f"reported as no effect.\n\n"
+        "| metric | per-seed deltas | mean | SE | verdict |\n|---|---|---|---|---|"
     )
-    return (
-        f"`{b} - {a}` over paired seeds {shared}: "
-        f"per-seed {np.round(d, 3).tolist()}, "
-        f"mean {mean:+.3f} ppl (SE {se:.3f}) — {verdict}"
-    )
+    return header + "\n" + "\n".join(lines)
 
 
 def interaction(by_arm) -> str | None:
