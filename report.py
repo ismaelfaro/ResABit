@@ -169,6 +169,44 @@ def interaction(by_arm) -> str | None:
     )
 
 
+def alpha_trajectory(by_arm) -> str | None:
+    """Test RaBiT's inter-path adaptation prediction on the gate curve.
+
+    RaBiT (ICML 2026) reports that parallel compensation paths co-adapt into
+    redundancy under QAT. If that holds here, the gates should rise and then
+    fall back toward zero. A monotonic rise means the pathway is being used
+    and kept; a flat curve means the gates never moved and the arm is a
+    no-op regardless of what perplexity says.
+    """
+    lines = []
+    for arm in ("onebit_ar", "fp32_ar"):
+        rows = [r for r in by_arm.get(arm, []) if r.get("train", {}).get("alpha_curve")]
+        if not rows:
+            continue
+        # Layer 0's gate is structurally inert; drop it.
+        curves = np.array([np.array(r["train"]["alpha_curve"])[:, 1:] for r in rows])
+        magnitude = np.abs(curves).mean(axis=-1)      # [runs, steps]
+        mean_curve = magnitude.mean(axis=0)
+        peak_step = int(mean_curve.argmax())
+        peak, final = float(mean_curve.max()), float(mean_curve[-1])
+        collapse = 1.0 - final / peak if peak > 0 else 0.0
+
+        if peak < 1e-4:
+            verdict = "**gates never moved** — the arm is effectively a no-op"
+        elif collapse > 0.2:
+            verdict = (
+                f"**gates peaked at step {peak_step} then fell {collapse:.0%}** — "
+                "consistent with RaBiT's inter-path adaptation"
+            )
+        else:
+            verdict = "**gates rose and held** — no sign of inter-path collapse"
+        lines.append(
+            f"- `{arm}`: mean |alpha| {mean_curve[0]:.5f} at start, "
+            f"{peak:.5f} peak (step {peak_step}), {final:.5f} final. {verdict}"
+        )
+    return "\n".join(lines) if lines else None
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--write-readme", action="store_true")
@@ -182,6 +220,8 @@ def main() -> None:
         parts += ["", "### Paired comparison", "", delta]
     if inter := interaction(by_arm):
         parts += ["", "### Derived quantities", "", inter]
+    if traj := alpha_trajectory(by_arm):
+        parts += ["", "### Gate trajectories", "", traj]
 
     body = "\n".join(parts)
     print(body)
