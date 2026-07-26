@@ -324,3 +324,31 @@ finding no advantage for the residual pathway.
 A cleaner "quantization damage" number would use the fine-tuned FP32 arm as
 the reference. That requires keeping its weights around, which this sweep
 does not do.
+
+---
+
+## 11. The instability finding has a confound, and it is ours
+
+`onebit_ar` came out 4.8x more variable across seeds than `onebit` (sd 10.13
+against 2.10) without being better on average. Before that is reported as a
+property of attention residuals, it has to be said what else could produce
+it.
+
+The gates are given an effective learning rate 10x the base
+(`DecoderLayer.ALPHA_GAIN`), a choice made so the arm would not be a no-op
+by construction inside a 300-step budget (§3). That choice is doing work
+here. At gain 1 the gates would barely move, the arm would behave like its
+non-AR twin, and its variance would presumably match. So the measured
+instability is a property of **AR with gates that actually move**, which is
+the intervention as operationalised, not of the accumulator in the abstract.
+
+The honest statement is therefore narrower than "attention residuals
+destabilise training": at a gain large enough for the pathway to be used at
+all within this budget, the arm becomes markedly less reproducible without
+becoming better. Whether a smaller gain buys some benefit without the
+instability is a gain sweep this experiment does not run, and it is the
+first follow-up a reviewer will ask for.
+
+The direction of the learned gates (§ gate profile: 22 of 23 negative) is
+not subject to this confound. The gain sets how fast they move, not which
+way.
