@@ -267,7 +267,9 @@ def summarise(records: list[dict]) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--stage", default="full",
-                   choices=["smoke", "noise-floor", "full", "final-evals"])
+                   choices=["smoke", "determinism", "noise-floor", "full"])
+    p.add_argument("--replicates", type=int, default=3,
+                   help="determinism stage: identical reruns of one arm/seed")
     p.add_argument("--steps", type=int, default=300)
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     p.add_argument("--batch-size", type=int, default=2)
@@ -311,6 +313,13 @@ def main() -> None:
     if args.stage == "smoke":
         plan = [(ARMS["onebit_ar"], args.seeds[0])]
         train_cfg = TrainConfig(**{**asdict(train_cfg), "steps": 3, "log_every": 1})
+    elif args.stage == "determinism":
+        # Identical configuration, repeated. Everything that moves between
+        # these runs is backend nondeterminism -- MLX GPU reductions are not
+        # bitwise reproducible, and a binarised network amplifies that. This
+        # is the floor beneath the seed-to-seed floor, and without it a
+        # small paired difference cannot be interpreted at all.
+        plan = [(ARMS["onebit"], args.seeds[0])] * args.replicates
     elif args.stage == "noise-floor":
         # Two variance sources, measured separately. Re-running one seed
         # isolates backend nondeterminism (MLX GPU reductions are not
@@ -347,22 +356,33 @@ def main() -> None:
     # Resume treats the ledger as the record of what exists, so a sweep can
     # be interrupted and continued without recomputing finished arms. Only
     # successful runs count: a crashed pair should be retried, not skipped.
-    done_pairs: set[tuple[str, int]] = set()
     suite_done: set[str] = set()
     if args.resume:
+        # Count completed runs per (arm, seed, stage) rather than testing
+        # membership: the determinism stage deliberately repeats one
+        # configuration, so "already present" is the wrong question there --
+        # "how many of the requested repeats exist" is the right one.
+        completed: dict[tuple[str, int, str], int] = {}
         for record in load_ledger():
             if record["status"] == "crash":
                 continue
-            done_pairs.add((record["arm"], record["seed"]))
+            key = (record["arm"], record["seed"], record["stage"])
+            completed[key] = completed.get(key, 0) + 1
             if record.get("suite"):
                 suite_done.add(record["arm"])
-        skipped = [p for p in plan if (p[0].name, p[1]) in done_pairs]
+
+        remaining, skipped = [], []
+        budget = dict(completed)
+        for arm, seed in plan:
+            key = (arm.name, seed, args.stage)
+            if budget.get(key, 0) > 0:
+                budget[key] -= 1
+                skipped.append(f"{arm.name}/{seed}")
+            else:
+                remaining.append((arm, seed))
         if skipped:
-            print(
-                "resuming; already in ledger: "
-                + ", ".join(f"{a.name}/{s}" for a, s in skipped)
-            )
-        plan = [p for p in plan if (p[0].name, p[1]) not in done_pairs]
+            print("resuming; already in ledger: " + ", ".join(skipped))
+        plan = remaining
 
     for arm, seed in plan:
         wants_suite = (

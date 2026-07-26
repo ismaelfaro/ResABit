@@ -28,17 +28,50 @@ COLUMNS = [
 ]
 
 
-def load(stage: str | None = None) -> dict[str, list[dict]]:
+def _rows(stage: str | None) -> list[dict]:
     if not LEDGER.exists():
-        return {}
+        return []
     rows = [json.loads(l) for l in LEDGER.read_text().splitlines() if l.strip()]
     rows = [r for r in rows if r["status"] != "crash" and r.get("perplexity")]
-    if stage:
-        rows = [r for r in rows if r["stage"] == stage]
+    return [r for r in rows if stage is None or r["stage"] == stage]
+
+
+def load(stage: str | None = "full") -> dict[str, list[dict]]:
+    """Group runs by arm. Defaults to the main stage.
+
+    Determinism replicates repeat one configuration on purpose, so letting
+    them into the main table would weight that arm by however many repeats
+    happened to run.
+    """
     by_arm: dict[str, list[dict]] = {}
-    for r in rows:
+    for r in _rows(stage):
         by_arm.setdefault(r["arm"], []).append(r)
     return by_arm
+
+
+def determinism_floor() -> str | None:
+    """Spread across identical reruns: the floor beneath the seed floor.
+
+    Anything smaller than this is not an effect, it is the GPU's reduction
+    order. Reported before the paired comparison because it is what makes
+    that comparison interpretable.
+    """
+    rows = _rows("determinism")
+    if len(rows) < 2:
+        return None
+    ppls = np.array([r["perplexity"]["perplexity"] for r in rows])
+    nlls = np.array([r["perplexity"]["nll"] for r in rows])
+    spread = float(ppls.max() - ppls.min())
+    return (
+        f"{len(rows)} identical reruns of `{rows[0]['arm']}` at seed "
+        f"{rows[0]['seed']} (same config, same data order, same code):\n\n"
+        f"- perplexity: {np.round(ppls, 3).tolist()} — "
+        f"mean {ppls.mean():.3f}, sd {ppls.std(ddof=1):.3f}, "
+        f"range {spread:.3f}\n"
+        f"- NLL: mean {nlls.mean():.4f}, sd {nlls.std(ddof=1):.4f}\n\n"
+        f"**Any paired difference below ~{spread:.1f} ppl is backend "
+        f"nondeterminism, not an effect.**"
+    )
 
 
 def _cell(values: list[float], fmt: str = "{:.2f}") -> str:
@@ -249,6 +282,8 @@ def main() -> None:
     by_arm = load(args.stage)
     parts = [build_table(by_arm)]
 
+    if floor := determinism_floor():
+        parts += ["", "### Noise floor (identical reruns)", "", floor]
     if delta := paired_delta(by_arm, "onebit", "onebit_ar"):
         parts += ["", "### Paired comparison", "", delta]
     if inter := interaction(by_arm):
