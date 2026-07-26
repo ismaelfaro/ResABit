@@ -79,6 +79,26 @@ def build_table(by_arm: dict[str, list[dict]]) -> str:
     row("wikitext-2 top-1 acc", lambda r: _get(r, "perplexity", "top1_accuracy"), "{:.4f}")
     row("final train loss", lambda r: _get(r, "train", "final_train_loss"), "{:.4f}")
 
+    # Held-out suite: one reference seed per arm, so no spread to report.
+    row("KL to FP32 base (nats)",
+        lambda r: _get(r, "suite", "divergence", "kl_teacher_student"), "{:.4f}")
+    row("top-1 agreement with base",
+        lambda r: _get(r, "suite", "divergence", "top1_agreement"), "{:.4f}")
+
+    for task, label in (
+        ("arc_easy", "ARC-Easy acc"),
+        ("hellaswag", "HellaSwag acc_norm"),
+        ("lambada", "LAMBADA acc"),
+    ):
+        def getter(rows, _t=task):
+            return _get(rows, "suite", "zero_shot", _t, "primary")
+
+        stderrs = []
+        for k, _ in present:
+            stderrs += _get(by_arm[k], "suite", "zero_shot", task, "stderr")
+        suffix = f" (±{np.mean(stderrs):.4f} SE)" if stderrs else ""
+        row(label + suffix, getter, "{:.4f}")
+
     lines.append(
         "| bits/weight (quantised params) | "
         + " | ".join(

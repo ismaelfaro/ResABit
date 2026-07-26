@@ -34,6 +34,7 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+import mlx.core as mx
 import numpy as np
 import torch
 
@@ -116,6 +117,45 @@ def build_torch_model(arm: Arm, mlx_state: dict, device: torch.device):
     return model.to(device).eval()
 
 
+def run_full_suite(
+    torch_model,
+    tokenizer,
+    teacher,
+    eval_tokens: torch.Tensor,
+    device: torch.device,
+    task_limits: dict[str, int | None],
+) -> dict:
+    """Held-out metrics, run once per arm on the reference seed.
+
+    Zero-shot accuracy is the number readers expect; teacher divergence is
+    the number that still resolves once accuracy has floored at chance.
+    """
+    from src.data import load_multiple_choice
+    from src.evaluate import evaluate_multiple_choice, evaluate_teacher_divergence
+
+    out: dict = {"zero_shot": {}}
+    for task_name, limit in task_limits.items():
+        task = load_multiple_choice(task_name, limit=limit)
+        result = evaluate_multiple_choice(
+            torch_model, tokenizer, task, device, progress=False
+        )
+        out["zero_shot"][task_name] = result
+        print(
+            f"     {task_name:<10} {result['primary_metric']} "
+            f"{result['primary']:.4f} +/- {result['stderr']:.4f} "
+            f"(n={result['num_items']})"
+        )
+
+    out["divergence"] = evaluate_teacher_divergence(
+        torch_model, teacher, eval_tokens, device, max_windows=32, progress=False
+    )
+    print(
+        f"     teacher    KL {out['divergence']['kl_teacher_student']:.4f} nats  "
+        f"agree {out['divergence']['top1_agreement']:.4f}"
+    )
+    return out
+
+
 def run_one(
     arm: Arm,
     seed: int,
@@ -124,21 +164,37 @@ def run_one(
     eval_tokens: torch.Tensor,
     device: torch.device,
     stage: str,
+    full_suite: bool = False,
+    tokenizer=None,
+    teacher=None,
+    task_limits: dict | None = None,
 ) -> dict:
-    header = f"=== {arm.name}  seed {seed}  ({stage}) ==="
-    print(f"\n{header}")
+    print(f"\n=== {arm.name}  seed {seed}  ({stage}) ===")
 
     cfg = TrainConfig(**{**asdict(train_cfg), "seed": seed})
     started = time.time()
+    suite = None
 
     try:
         model, train_result = run_qat(arm.model_config(), cfg, windows)
         state = mlx_to_torch_state(model)
         del model
+        # MLX and PyTorch draw on the same unified memory and neither sees
+        # the other's allocations. Hand back MLX's cache before standing up
+        # the evaluation models.
+        mx.clear_cache()
 
         torch_model = build_torch_model(arm, state, device)
         ppl = evaluate_perplexity(torch_model, eval_tokens, device, progress=False)
         alphas = torch_model.alpha_values()
+        print(
+            f"  -> ppl {ppl.perplexity:.3f}  nll {ppl.nll:.4f}  "
+            f"top1 {ppl.top1_accuracy:.4f}"
+        )
+        if full_suite:
+            suite = run_full_suite(
+                torch_model, tokenizer, teacher, eval_tokens, device, task_limits
+            )
         del torch_model
         status = "diverged" if train_result.diverged else "ok"
         error = None
@@ -159,18 +215,14 @@ def run_one(
         "wall_seconds": round(time.time() - started, 1),
         "train": train_result.as_dict() if train_result else None,
         "perplexity": ppl.as_dict() if ppl else None,
+        "suite": suite,
         "alphas": alphas,
         "train_config": asdict(cfg),
         "quantize_linear": arm.quantize_linear,
         "use_attention_residuals": arm.use_attention_residuals,
     }
     append_ledger(record)
-
-    if ppl:
-        print(
-            f"  -> ppl {ppl.perplexity:.3f}  nll {ppl.nll:.4f}  "
-            f"top1 {ppl.top1_accuracy:.4f}  ({record['wall_seconds']:.0f}s)"
-        )
+    print(f"  ({record['wall_seconds']:.0f}s total)")
     return record
 
 
@@ -224,6 +276,10 @@ def main() -> None:
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--eval-tokens", type=int, default=131072,
                    help="wikitext validation tokens used for the dev metric")
+    p.add_argument("--hellaswag-limit", type=int, default=2000)
+    p.add_argument("--lambada-limit", type=int, default=1000)
+    p.add_argument("--no-zero-shot", action="store_true",
+                   help="skip the held-out suite (perplexity only)")
     args = p.parse_args()
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -267,8 +323,41 @@ def main() -> None:
         plan = [(ARMS[n], s) for s in args.seeds for n in ABLATION_PAIR]
         plan += [(ARMS[n], args.seeds[0]) for n in ("fp32", "fp32_ar")]
 
+    # The held-out suite runs once per arm, on the reference seed only. It
+    # is expensive and it is held out: running it on every seed would turn
+    # it into a dev metric that the protocol then has no guard against.
+    reference_seed = args.seeds[0]
+    task_limits = {
+        "arc_easy": None,
+        "hellaswag": args.hellaswag_limit,
+        "lambada": args.lambada_limit,
+    }
+    teacher = None
+    if not args.no_zero_shot and args.stage in ("full", "final-evals"):
+        from src.loader import load_pretrained
+
+        print("loading FP32 reference for teacher divergence ...")
+        teacher = load_pretrained(
+            ModelConfig(quantize_linear=False, use_attention_residuals=False),
+            verbose=False,
+        ).to(device).eval()
+
+    suite_done: set[str] = set()
     for arm, seed in plan:
-        run_one(arm, seed, train_cfg, windows, val_tokens, device, args.stage)
+        wants_suite = (
+            teacher is not None
+            and seed == reference_seed
+            and arm.name not in suite_done
+        )
+        if wants_suite:
+            suite_done.add(arm.name)
+        run_one(
+            arm, seed, train_cfg, windows, val_tokens, device, args.stage,
+            full_suite=wants_suite,
+            tokenizer=tokenizer,
+            teacher=teacher,
+            task_limits=task_limits,
+        )
 
     summarise(load_ledger())
 
