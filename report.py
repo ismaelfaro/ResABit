@@ -245,11 +245,38 @@ def interaction(by_arm) -> str | None:
     inter = ar_cost_1bit - ar_cost_fp32
 
     quant_gap = vals["onebit"] - vals["fp32"]
-    verdict = (
-        "AR buys more under binarization"
-        if inter < 0
-        else "AR does not preferentially help binarization"
-    )
+
+    # Judge the interaction against the noise on its own terms, not against
+    # zero. Reporting a sign for a quantity many times smaller than the
+    # standard error of one of its components is how a null becomes a claim.
+    nlls = {
+        arm: [r["perplexity"]["nll"] for r in by_arm.get(arm, [])]
+        for arm in ("onebit", "onebit_ar")
+    }
+    paired_se = None
+    if len(nlls["onebit"]) == len(nlls["onebit_ar"]) >= 2:
+        d = np.array(nlls["onebit_ar"]) - np.array(nlls["onebit"])
+        paired_se = float(d.std(ddof=1) / np.sqrt(len(d)))
+
+    if paired_se is None:
+        verdict = "no noise estimate available yet"
+        scale = ""
+    elif abs(inter) < 2 * paired_se:
+        verdict = "**not distinguishable from zero**"
+        scale = (
+            f"\n\nThe paired standard error on the 1-bit AR term alone is "
+            f"{paired_se:.4f} nats, {paired_se/abs(inter):.1f}x the interaction "
+            f"itself. **The attention residual does not preferentially repair "
+            f"binarization damage.**"
+        )
+    else:
+        verdict = (
+            "**AR buys more under binarization**"
+            if inter < 0
+            else "**AR helps less under binarization**"
+        )
+        scale = f"\n\nPaired standard error on the 1-bit term: {paired_se:.4f} nats."
+
     return (
         f"All quantities in nats of NLL; perplexity ratios in parentheses.\n\n"
         f"- Quantization cost (no AR): **{quant_gap:+.4f}** nats "
@@ -258,10 +285,8 @@ def interaction(by_arm) -> str | None:
         f"({np.exp(ar_cost_fp32):.3f}x)\n"
         f"- AR cost at 1-bit: **{ar_cost_1bit:+.4f}** nats "
         f"({np.exp(ar_cost_1bit):.3f}x)\n"
-        f"- **Interaction: {inter:+.4f} nats** — {verdict}\n\n"
-        f"For scale, the paired standard error on the 1-bit AR effect alone "
-        f"is an order of magnitude larger than this interaction, so it is not "
-        f"distinguishable from zero."
+        f"- Interaction: {inter:+.4f} nats — {verdict}"
+        + scale
     )
 
 
