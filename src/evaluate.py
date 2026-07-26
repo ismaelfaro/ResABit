@@ -102,27 +102,53 @@ def evaluate_perplexity(
     )
 
 
-@torch.no_grad()
-def _score_continuation(
-    model, tokenizer, context: str, continuation: str, device: torch.device
-) -> tuple[float, int, bool]:
-    """Summed log-prob of ``continuation`` given ``context``, and greedy match."""
+def _encode_request(
+    tokenizer, context: str, continuation: str
+) -> tuple[list[int], int]:
+    """Token ids for ``context + continuation``, and how many are continuation."""
     ctx_ids = tokenizer(context, add_special_tokens=False).input_ids
     full_ids = tokenizer(context + continuation, add_special_tokens=False).input_ids
-    cont_len = len(full_ids) - len(ctx_ids)
-    if cont_len <= 0:
-        return float("-inf"), 0, False
+    return full_ids, len(full_ids) - len(ctx_ids)
 
-    ids = torch.tensor([full_ids], device=device)
-    logits = model(input_ids=ids)["logits"].float()[0]
 
-    # Position i predicts token i+1, so continuation token j is scored by
-    # logits at index len(ctx) + j - 1.
-    target = torch.tensor(full_ids[-cont_len:], device=device)
-    window = logits[-cont_len - 1 : -1]
-    logprobs = window.log_softmax(-1).gather(-1, target.unsqueeze(-1)).squeeze(-1)
-    greedy = bool((window.argmax(-1) == target).all())
-    return float(logprobs.sum()), cont_len, greedy
+@torch.no_grad()
+def _score_batch(
+    model, requests: list[tuple[list[int], int]], device: torch.device
+) -> list[tuple[float, bool]]:
+    """Score a batch of (token_ids, continuation_length) pairs in one forward.
+
+    Sequences are right-padded. Under a causal mask a padded tail cannot
+    influence any earlier position, so padding is safe here and no attention
+    mask is needed -- every position we read sits before the padding.
+
+    Scoring one sequence per forward is roughly 14000 forwards for a single
+    arm's suite, which dominates the sweep's wall clock. Batching leaves the
+    arithmetic unchanged; ``tests/test_data_and_eval.py`` asserts the batched
+    and unbatched paths agree.
+    """
+    if not requests:
+        return []
+    lengths = [len(ids) for ids, _ in requests]
+    width = max(lengths)
+    padded = torch.zeros(len(requests), width, dtype=torch.long, device=device)
+    for row, (ids, _) in enumerate(requests):
+        padded[row, : len(ids)] = torch.tensor(ids, device=device)
+
+    logits = model(input_ids=padded)["logits"].float()
+
+    out = []
+    for row, ((ids, cont_len), length) in enumerate(zip(requests, lengths)):
+        if cont_len <= 0:
+            out.append((float("-inf"), False))
+            continue
+        # Position i predicts token i+1, so continuation token j is scored
+        # by the logits at index len(context) + j - 1.
+        start = length - cont_len - 1
+        window = logits[row, start : length - 1]
+        target = torch.tensor(ids[-cont_len:], device=device)
+        logprobs = window.log_softmax(-1).gather(-1, target.unsqueeze(-1)).squeeze(-1)
+        out.append((float(logprobs.sum()), bool((window.argmax(-1) == target).all())))
+    return out
 
 
 @torch.no_grad()
@@ -132,6 +158,7 @@ def evaluate_multiple_choice(
     task: MultipleChoiceTask,
     device: torch.device,
     progress: bool = True,
+    batch_size: int = 16,
 ) -> dict:
     """Zero-shot accuracy by log-likelihood ranking.
 
@@ -140,22 +167,43 @@ def evaluate_multiple_choice(
     by exact greedy match instead of ranking.
     """
     model.eval()
-    n_correct = n_correct_norm = 0
     total = len(task)
 
-    for i in tqdm(range(total), desc=task.name, disable=not progress):
-        scores, norms, greedy_hits = [], [], []
+    # Flatten every (item, choice) pair into one request list, then walk it
+    # in batches. Choices within an item vary in length, so batching across
+    # items keeps the padding waste roughly uniform.
+    requests, owners = [], []
+    for i in range(total):
         for choice in task.choices[i]:
-            logprob, _, greedy = _score_continuation(
-                model, tokenizer, task.contexts[i], choice, device
-            )
-            scores.append(logprob)
-            norms.append(logprob / max(len(choice), 1))
-            greedy_hits.append(greedy)
+            requests.append(_encode_request(tokenizer, task.contexts[i], choice))
+            owners.append(i)
 
+    # Batch length-alike requests together. A batch is padded to its longest
+    # member, so mixing a 12-token and a 200-token request wastes most of the
+    # compute; sorting first cuts the suite's wall clock several-fold. The
+    # original order is restored below, so results are unaffected.
+    order = sorted(range(len(requests)), key=lambda i: len(requests[i][0]))
+    scored: list[tuple[float, bool] | None] = [None] * len(requests)
+    for start in tqdm(
+        range(0, len(order), batch_size), desc=task.name, disable=not progress
+    ):
+        chunk = order[start : start + batch_size]
+        for index, result in zip(chunk, _score_batch(model, [requests[i] for i in chunk], device)):
+            scored[index] = result
+
+    per_item: list[list[tuple[float, bool]]] = [[] for _ in range(total)]
+    for owner, result in zip(owners, scored):
+        per_item[owner].append(result)
+
+    n_correct = n_correct_norm = 0
+    for i, results in enumerate(per_item):
+        scores = [s for s, _ in results]
+        norms = [
+            s / max(len(choice), 1) for (s, _), choice in zip(results, task.choices[i])
+        ]
         if len(scores) == 1:
-            n_correct += int(greedy_hits[0])
-            n_correct_norm += int(greedy_hits[0])
+            n_correct += int(results[0][1])
+            n_correct_norm += int(results[0][1])
         else:
             gold = task.answers[i]
             n_correct += int(max(range(len(scores)), key=scores.__getitem__) == gold)

@@ -280,6 +280,8 @@ def main() -> None:
     p.add_argument("--lambada-limit", type=int, default=1000)
     p.add_argument("--no-zero-shot", action="store_true",
                    help="skip the held-out suite (perplexity only)")
+    p.add_argument("--resume", action="store_true",
+                   help="skip (arm, seed) pairs already recorded in the ledger")
     args = p.parse_args()
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -342,7 +344,26 @@ def main() -> None:
             verbose=False,
         ).to(device).eval()
 
+    # Resume treats the ledger as the record of what exists, so a sweep can
+    # be interrupted and continued without recomputing finished arms. Only
+    # successful runs count: a crashed pair should be retried, not skipped.
+    done_pairs: set[tuple[str, int]] = set()
     suite_done: set[str] = set()
+    if args.resume:
+        for record in load_ledger():
+            if record["status"] == "crash":
+                continue
+            done_pairs.add((record["arm"], record["seed"]))
+            if record.get("suite"):
+                suite_done.add(record["arm"])
+        skipped = [p for p in plan if (p[0].name, p[1]) in done_pairs]
+        if skipped:
+            print(
+                "resuming; already in ledger: "
+                + ", ".join(f"{a.name}/{s}" for a, s in skipped)
+            )
+        plan = [p for p in plan if (p[0].name, p[1]) not in done_pairs]
+
     for arm, seed in plan:
         wants_suite = (
             teacher is not None
