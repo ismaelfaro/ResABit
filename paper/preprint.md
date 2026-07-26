@@ -23,10 +23,11 @@ We find `[TBD]`. We also report two methodological results that hold
 regardless of the ablation's outcome: binarised transformers are numerically
 chaotic, with cross-backend disagreement rising from ~1e-5 to ~1e-2 and
 compounding monotonically with depth, which makes post-training 1-bit
-perplexity implementation-dependent; and at this budget, log-likelihood
-accuracy benchmarks floor at chance while KL-to-teacher continues to resolve,
-so accuracy-only tables cannot distinguish recovery methods in the
-low-budget regime.
+perplexity implementation-dependent; and at this budget the standard
+log-likelihood benchmarks separate FP32 from 1-bit cleanly (ARC-Easy 0.542
+vs 0.262) but cannot separate one 1-bit arm from another, because both sit
+at chance, while KL-to-teacher still resolves. Accuracy-only tables can
+therefore size a quantization gap but not compare recovery methods.
 
 ---
 
@@ -185,12 +186,20 @@ chance on both, so they contribute noise, not signal.
 Mean `KL(teacher || student)` on the student's next-token distribution over
 wikitext, plus top-1 agreement, against the FP32 fine-tuned arm.
 
-This is the metric that carries the ablation. A 4-way task floors at 25%: it
-cannot distinguish a damaged model from a destroyed one. In the low-budget
-recovery regime every 1-bit arm may sit at chance on accuracy while differing
-substantially in distributional fidelity. KL has no floor. We suggest it
-should be standard in extreme-quantization tables and note it is almost never
-reported.
+This is the metric that carries the ablation, and the reason is specific.
+
+The accuracy suite is not insensitive in general: it separates the FP32 and
+1-bit arms decisively (ARC-Easy 0.542 against 0.262, chance 0.25). What it
+cannot do is separate two 1-bit arms from each other, because both have
+already fallen to chance and a 4-way task has no room below it. LAMBADA is
+starker still: exactly 0.000 for both 1-bit arms, against 0.33 for the base
+model.
+
+So the standard suite sizes the quantization gap and stops. Comparing
+recovery methods needs a metric with no floor, and KL-to-teacher is the
+natural one -- it is a direct measure of how far quantization moved the
+model's predictive distribution. We suggest it belongs in
+extreme-quantization tables and note it is almost never reported.
 
 ---
 
