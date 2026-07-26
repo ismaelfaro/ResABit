@@ -273,6 +273,41 @@ def alpha_trajectory(by_arm) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+def stability_comparison(by_arm, a: str, b: str) -> str | None:
+    """Compare seed-to-seed spread, not just the means.
+
+    Two arms can share a mean and differ entirely in how reliably they reach
+    it. For a recovery technique that is the more practical question: a
+    method whose outcome swings with the seed is one you cannot deploy on a
+    single run, whatever its average.
+    """
+    rows_a = by_arm.get(a, [])
+    rows_b = by_arm.get(b, [])
+    if len(rows_a) < 3 or len(rows_b) < 3:
+        return None
+
+    pa = np.array([r["perplexity"]["perplexity"] for r in rows_a])
+    pb = np.array([r["perplexity"]["perplexity"] for r in rows_b])
+    sd_a, sd_b = pa.std(ddof=1), pb.std(ddof=1)
+    ratio = (sd_b / sd_a) ** 2
+
+    note = ""
+    if ratio > 4:
+        note = (
+            f"\n\n**`{b}` is {sd_b/sd_a:.1f}x more variable across seeds than "
+            f"`{a}` while not being better on average.** With "
+            f"{len(pa)} seeds this is a variance ratio of {ratio:.1f} on "
+            f"{len(pa)-1} and {len(pb)-1} degrees of freedom — suggestive, "
+            f"not conclusive, and worth more seeds before it is claimed."
+        )
+    return (
+        f"| arm | perplexities | mean | sd |\n|---|---|---|---|\n"
+        f"| `{a}` | {np.round(pa, 3).tolist()} | {pa.mean():.3f} | {sd_a:.3f} |\n"
+        f"| `{b}` | {np.round(pb, 3).tolist()} | {pb.mean():.3f} | {sd_b:.3f} |"
+        + note
+    )
+
+
 def alpha_by_depth(by_arm) -> str | None:
     """Where in the stack the residual pathway actually gets used.
 
@@ -323,6 +358,8 @@ def main() -> None:
         parts += ["", "### Noise floor (identical reruns)", "", floor]
     if delta := paired_delta(by_arm, "onebit", "onebit_ar"):
         parts += ["", "### Paired comparison", "", delta]
+    if stab := stability_comparison(by_arm, "onebit", "onebit_ar"):
+        parts += ["", "### Run-to-run stability", "", stab]
     if inter := interaction(by_arm):
         parts += ["", "### Derived quantities", "", inter]
     if traj := alpha_trajectory(by_arm):
