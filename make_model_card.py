@@ -71,11 +71,12 @@ def fmt_metrics(manifest: dict) -> tuple[str, str]:
         f"forward — FP32 master weights pushed through the straight-through "
         f"quantizer — because that is what all four arms were compared on. "
         f"This checkpoint stores packed sign bits and FP16 group scales, and "
-        f"computes {frozen['perplexity']:.3f} against the table's "
-        f"{train_forward['perplexity']:.3f}: {delta:+.4f} nats. The gap is "
-        f"the FP16 rounding of the group scales, compounded through 24 "
-        f"layers by the discontinuity in `sign()`. Quoting the table's number "
-        f"for this file would describe a model nobody can download."
+        f"computes {frozen['perplexity']:.4f} against the table's "
+        f"{train_forward['perplexity']:.4f}: **{delta:+.6f} nats**. FP16 "
+        f"rounding of the group scales moves magnitudes without flipping any "
+        f"sign bit, so it does not compound with depth the way cross-backend "
+        f"disagreement does. The two paths are still different computations, "
+        f"and this is the one the file performs."
     )
 
 

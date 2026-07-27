@@ -196,9 +196,15 @@ ledger's perplexity rather than shipping a checkpoint no table describes.
 **A frozen checkpoint does not compute the ledger's number.** The ledger
 records the training forward: FP32 master weights pushed through
 `fake_quantize` on every call. Freezing stores the group scales as FP16,
-which moves each layer by ~2e-4 relative — and `sign()` is a discontinuity,
-so that does not stay at 2e-4 through 24 layers. The export measures both and
-the model card quotes the frozen one.
+which moves each layer by ~2e-4 relative. The export measures both and the
+model card quotes the frozen one.
+
+Measured, it costs **+8e-6 nats** — 282.2098 against 282.2077. We expected it
+to compound with depth and it does not, because FP16 rounding perturbs group
+magnitudes without flipping any sign bit, so it never crosses the
+discontinuity that makes binarised stacks diverge. Worth measuring anyway:
+the two paths are different computations and that number had never been
+checked.
 
 Score a checkpoint on the held-out suite without retraining:
 
@@ -224,8 +230,14 @@ does not quote its own frozen perplexity:
 python upload_to_hf.py checkpoints/resabit-onebit-seed0 --repo <user>/resabit-1bit
 ```
 
-The released weights are research artifacts. At ~285 perplexity the model
-does not produce coherent text, and the card leads with that.
+The released weights are research artifacts, and the card leads with that.
+Greedy decoding from the `onebit` checkpoint, prompted with *"The capital of
+France is"*:
+
+> The capital of France is the first 1990s . The first 1990s was the first
+> time of the
+
+Grammatical shape, no content. That is 282 perplexity from the inside.
 
 ---
 

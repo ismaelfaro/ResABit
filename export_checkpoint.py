@@ -14,13 +14,16 @@ The ledger records the *training forward*: FP32 master weights pushed through
 ``fake_quantize`` on every call. That is the right number for the ablation --
 it is what training optimised and what every arm was compared on -- but it is
 not what a downloaded checkpoint computes. Freezing stores the group scales as
-FP16, which moves each layer's output by ~2e-4 relative, and ``sign()`` is a
-discontinuity, so the perturbation does not stay at 2e-4 through 24 layers.
+FP16, which moves each layer's output by ~2e-4 relative.
 
 So the frozen path is evaluated separately and the model card quotes *that*.
-Publishing the ledger number against a checkpoint that computes a different
-one would be the same class of error as quoting 1.125 bits/weight for a model
-whose embeddings are FP32.
+It turns out to cost +8e-6 nats on this model, which is nothing -- FP16
+rounding perturbs magnitudes without flipping sign bits, so it stays away
+from the discontinuity that makes binarised stacks diverge with depth. That
+is a measurement, and it was worth making: the number had never been checked,
+and publishing the ledger's figure against a file that computes a different
+one is the same class of error as quoting 1.125 bits/weight for a model whose
+embeddings are FP32.
 
 Usage
 -----

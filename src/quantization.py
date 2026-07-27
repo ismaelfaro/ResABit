@@ -17,10 +17,15 @@ Three forward paths
     path for a frozen checkpoint. It is *not* bit-exact with the training
     forward: ``quantize`` stores the group scales as FP16, which moves the
     layer output by ~2e-4 relative. ``tests/test_quantization.py`` pins that
-    gap. It is small per layer and it is not free -- ``sign()`` is a
-    discontinuity, so the perturbation compounds with depth, and a frozen
-    checkpoint's perplexity has to be measured on this path rather than
-    inherited from the training-forward number.
+    gap.
+
+    Measured end to end, the perturbation does **not** compound: a frozen
+    0.5B checkpoint scores 282.2098 against the training forward's 282.2077,
+    +8e-6 nats. The reason is that FP16 rounding perturbs group *magnitudes*
+    and flips no sign bits, so it never crosses the discontinuity that drives
+    the depth-compounding divergence measured across backends. Still measure
+    it rather than assume it -- that number had never been checked, and the
+    two paths are not the same computation.
 ``int8``
     Grouped INT8 GEMM. Opt-in, and asserted equivalent to ``dequant`` in
     ``tests/test_quantization.py``.

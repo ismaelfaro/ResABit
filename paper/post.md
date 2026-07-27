@@ -174,11 +174,21 @@ usually goes wrong in public.
 perplexity in the results table is the *training forward*: FP32 master weights
 pushed through the straight-through quantizer on each call. A frozen
 checkpoint stores packed sign bits and FP16 group scales, and FP16 rounding
-moves each layer's output by ~2e-4 relative. Small — except `sign()` sits on a
-discontinuity and this project's own §5.4 measures how such perturbations
-compound with depth. So the released weights are scored separately on the
-frozen path and carry that number. Publishing the table's number against a
-downloadable file would have described a model nobody can run.
+moves each layer's output by ~2e-4 relative. That number had never been
+measured on a real checkpoint, so the released weights are scored separately
+on the frozen path and carry their own figure.
+
+This one has a twist, and it went against me in the useful direction. I
+predicted the perturbation would compound with depth — 24 layers, and this
+project's own numbers show binarised stacks diverging monotonically across
+backends. It does not compound. The frozen checkpoint scores 282.2098 against
+282.2077: **eight micronats.** The distinction turns out to be the sign bits.
+FP16 rounding moves group magnitudes and flips nothing, so it stays on one
+side of the discontinuity; the cross-backend divergence flips stored bits and
+crosses it. Perturbations that respect `sign()` are benign, and ones that
+cross it are not — which is a sharper statement than the chaos result I had
+already written, and I only got it by measuring something I was confident I
+could predict.
 
 **8. The strict loader was not strict.** The module exists because the
 original code used `load_state_dict(strict=False)` and lost 72 bias tensors.
@@ -256,10 +266,17 @@ settle it is the obvious follow-up and I did not run it.
 
 ## What this is not
 
-It is not a working 1-bit model. Perplexity ~285 against 14.7 for the same
-architecture in FP32 means incoherent text. The released checkpoints are
-research artifacts — published so the 2x2 can be re-scored without repeating
-the training, not because anyone should generate with them.
+It is not a working 1-bit model. Here is the released `onebit` checkpoint,
+greedy decoding, prompted with *"The capital of France is"*:
+
+> The capital of France is the first 1990s . The first 1990s was the first
+> time of the
+
+Grammatical shape, no content, immediate collapse into repetition. That is
+what 282 perplexity looks like from the inside, and it is the reason the
+checkpoints ship as research artifacts — published so the 2x2 can be
+re-scored without repeating the training, not because anyone should generate
+with them.
 
 It is not a compression result either. The file is 666 MB: 43 MB of binarised
 projections and 623 MB of FP32 embedding table. Qwen1.5 has a 151,936-token

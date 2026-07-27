@@ -116,10 +116,18 @@ perplexity reported here is the training forward — FP32 master weights pushed
 through the straight-through quantizer on each call — because that is what
 training optimised and what all four arms were compared on. Freezing to the
 packed representation stores the group scales in FP16, perturbing each layer
-by ~2e-4 relative. That is small per layer and it does not stay small:
-`sign()` is a discontinuity, and §5.4 measures how such perturbations compound
-with depth. Released checkpoints are therefore scored separately on the frozen
-path and carry that number, not this one.
+by ~2e-4 relative. Released checkpoints are therefore scored separately on
+the frozen path and carry that number, not this one.
+
+We expected that perturbation to compound: §5.4 measures binarised stacks
+diverging monotonically with depth, and 24 layers of 2e-4 is not obviously
+negligible. **It does not compound.** The frozen `onebit` checkpoint scores
+282.2098 against the training forward's 282.2077, a difference of 8e-6 nats.
+The distinction is the sign bits: FP16 rounding moves group magnitudes and
+flips nothing, so it never crosses the discontinuity that drives the
+divergence in §5.4. Perturbations that stay on one side of `sign()` are
+benign; the ones that cross it are not. That is a sharper statement of §5.4's
+finding than §5.4 makes, and it was only available by measuring both paths.
 
 ### 2.2 Attention residuals
 
