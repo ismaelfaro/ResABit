@@ -40,6 +40,10 @@ from src.mlx_backend.train import TrainConfig, mlx_to_torch_state, run_qat
 
 LEDGER = Path("results/diffusion_ledger.jsonl")
 
+# Below this a run is plumbing, not an experiment, and is tagged so no
+# aggregator can average it in with real ones.
+SMOKE_STEPS = 50
+
 
 class _Arm:
     """Shape ``build_torch_model`` expects, without the ablation's registry."""
@@ -160,6 +164,12 @@ def main() -> None:
         f.write(json.dumps({
             "arm": arm.name,
             "seed": args.seed,
+            # The autoregressive ledger learned this the hard way: without a
+            # stage field, three determinism replicates of one seed got
+            # pooled into the seed statistics and the table read "8 seeds"
+            # for a five-seed arm. A plumbing run and an experiment must be
+            # distinguishable by a key, not by the reader noticing.
+            "stage": "smoke" if args.steps < SMOKE_STEPS else "full",
             "commit": git_commit(),
             "wall_seconds": round(time.time() - started, 1),
             "model_config": config.to_dict(),
