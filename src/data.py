@@ -129,7 +129,14 @@ def load_multiple_choice(name: str, limit: int | None = None) -> MultipleChoiceT
         task = MultipleChoiceTask("hellaswag", contexts, choices, answers, "acc_norm")
 
     elif name == "piqa":
-        rows = load_dataset("ybisk/piqa", split="validation", trust_remote_code=True)
+        # `ybisk/piqa` ships a loading script, and datasets 4.x dropped script
+        # support outright -- `trust_remote_code` is not merely ignored, it
+        # raises. The Hub's own auto-converted parquet branch carries the same
+        # rows, so pin the revision rather than depending on a third-party
+        # mirror. `label` arrives as a string here; `int()` below absorbs that.
+        rows = load_dataset(
+            "ybisk/piqa", split="validation", revision="refs/convert/parquet"
+        )
         task = MultipleChoiceTask(
             "piqa",
             [f"Question: {r['goal']}\nAnswer:" for r in rows],
