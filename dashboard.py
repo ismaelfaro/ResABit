@@ -29,7 +29,15 @@ DEFAULT_LOG = Path("results/export.log")
 CHECKPOINTS = Path("checkpoints")
 
 STEP = re.compile(r"^\s*step\s+(\d+)/(\d+)\s+loss\s+([\d.]+)\s+lr\s+(\S+)\s+(\d+)s")
-ARM = re.compile(r"^arm\s+:\s+(\S+)\s+\(seed (\d+)\)")
+# Both header shapes: the export writes "arm : onebit  (seed 0)", the
+# diffusion check writes "arm : diffusion_fp32  seed 0".
+ARM = re.compile(r"^arm\s+:\s+(\S+)\s+\(?seed (\d+)\)?")
+NELBO = re.compile(
+    r"^\s*(\S+)\s+nelbo\s+([\d.]+)\s+floor\s+([\d.]+)\s+headroom\s+(\S+)\s+"
+    r"mask-acc\s+([\d.]+)"
+)
+VERDICT = re.compile(r"^VERDICT: (.+)$")
+GAIN = re.compile(r"^adaptation moved NELBO by (\S+) nats")
 OUT = re.compile(r"^out\s+:\s+(\S+)")
 LEDGER = re.compile(r"^ledger ppl\s+:\s+(\S+)")
 DRIFT = re.compile(r"^ledger drift\s+:\s+(\S+)")
@@ -67,6 +75,9 @@ class Arm:
     wrote: str | None = None
     error: str | None = None
     diverged_at: int | None = None
+    nelbo: list[tuple[str, float, float, float, float]] = field(default_factory=list)
+    gain: str | None = None
+    verdict: str | None = None
 
     @property
     def state(self) -> str:
@@ -133,6 +144,15 @@ def parse(log: Path) -> list[Arm]:
             current.error = m.group(1)
         elif m := REFUSED.match(line):
             current.error = "refused: " + m.group(1)
+        elif m := NELBO.match(line):
+            current.nelbo.append((
+                m.group(1), float(m.group(2)), float(m.group(3)),
+                float(m.group(4)), float(m.group(5)),
+            ))
+        elif m := GAIN.match(line):
+            current.gain = m.group(1)
+        elif m := VERDICT.match(line):
+            current.verdict = m.group(1)
 
     return arms
 
@@ -159,9 +179,10 @@ def live_processes(sample_seconds: float = 0.0) -> list[dict]:
         ["ps", "-Ao", "pid=,etime=,time=,rss=,command="],
         capture_output=True, text=True, check=False,
     )
+    entrypoints = ("export_checkpoint.py", "run_ablation.py", "run_diffusion_check.py")
     found = []
     for line in out.stdout.splitlines():
-        if "export_checkpoint.py" not in line and "run_ablation.py" not in line:
+        if not any(entry in line for entry in entrypoints):
             continue
         if "/bin/zsh" in line or "dashboard.py" in line:
             continue
@@ -179,7 +200,11 @@ def live_processes(sample_seconds: float = 0.0) -> list[dict]:
             "arm": next(
                 (t for t in command.split() if t in
                  ("onebit", "onebit_ar", "fp32", "fp32_ar")),
-                "?",
+                # The diffusion check names its arm from the config rather
+                # than from argv, so match it by entrypoint instead.
+                "diffusion_1bit" if "--quantize" in command
+                else "diffusion_fp32" if "run_diffusion_check.py" in command
+                else "?",
             ),
         })
 
@@ -342,13 +367,29 @@ def render(log: Path, sample_seconds: float = 0.0) -> str:
                     f"~{int(100 * elapsed / reference)}% of the training phase "
                     f"by elapsed time  (INFERRED)"
                 )
-            lines.append(
-                "    log silent: this arm started before stdout was line-buffered, "
-                "so its"
-            )
-            lines.append(
-                "    step lines land in one burst when the process exits."
-            )
+            # Two different silences. A log still being written has simply
+            # not reached the training loop -- the evaluation passes emit
+            # nothing until they finish. A log whose mtime has gone cold
+            # belongs to a run started before stdout was line-buffered, and
+            # will stay cold until the process exits.
+            log_age = time.time() - log.stat().st_mtime if log.exists() else 1e9
+            if log_age < 120:
+                lines.append(
+                    f"    no step lines yet, but the log was written "
+                    f"{mmss(log_age)} ago — a phase that emits nothing until "
+                    "it finishes"
+                )
+                lines.append(
+                    "    (scoring passes print only their final line)"
+                )
+            else:
+                lines.append(
+                    f"    log cold for {mmss(log_age)}: started before stdout was "
+                    "line-buffered, so its"
+                )
+                lines.append(
+                    "    step lines land in one burst when the process exits."
+                )
 
         if arm.drift is not None:
             ok = "" if arm.drift.startswith("0.00") else "   <-- MISSED THE LEDGER"
@@ -364,6 +405,17 @@ def render(log: Path, sample_seconds: float = 0.0) -> str:
             lines.append(f"    storage       {arm.storage}")
         if arm.bits:
             lines.append(f"    bits/weight   {arm.bits}")
+        for label, nelbo, floor, headroom, accuracy in arm.nelbo:
+            # Headroom, not NELBO, is the number that decides anything: a
+            # bound means nothing without the floor it has to clear.
+            lines.append(
+                f"    {label:<12} nelbo {nelbo:8.4f}  floor {floor:.4f}  "
+                f"headroom {headroom:+.4f}  mask-acc {accuracy:.4f}"
+            )
+        if arm.gain:
+            lines.append(f"    adaptation    {arm.gain} nats")
+        if arm.verdict:
+            lines.append(f"    VERDICT       {arm.verdict}")
         if arm.diverged_at is not None:
             lines.append(f"    DIVERGED at step {arm.diverged_at}")
         if arm.error:
