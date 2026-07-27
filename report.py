@@ -226,6 +226,47 @@ def paired_delta(by_arm, a: str, b: str) -> str | None:
     return header + "\n" + "\n".join(lines)
 
 
+def derived_quantities(by_arm) -> dict | None:
+    """The headline numbers, as values rather than prose.
+
+    Split out from :func:`interaction` so the model cards and the results
+    table cannot disagree: a card that retypes "2.97 nats" is a second source
+    of truth, and the two drift the first time a seed lands.
+    """
+    def mean_nll(arm):
+        rows = by_arm.get(arm, [])
+        return float(np.mean([r["perplexity"]["nll"] for r in rows])) if rows else None
+
+    vals = {a: mean_nll(a) for a, _ in COLUMNS}
+    if any(v is None for v in vals.values()):
+        return None
+
+    ar_cost_fp32 = vals["fp32_ar"] - vals["fp32"]
+    ar_cost_1bit = vals["onebit_ar"] - vals["onebit"]
+
+    nlls = {
+        arm: [r["perplexity"]["nll"] for r in by_arm.get(arm, [])]
+        for arm in ("onebit", "onebit_ar")
+    }
+    paired_se = None
+    if len(nlls["onebit"]) == len(nlls["onebit_ar"]) >= 2:
+        d = np.array(nlls["onebit_ar"]) - np.array(nlls["onebit"])
+        paired_se = float(d.std(ddof=1) / np.sqrt(len(d)))
+
+    return {
+        "nll": vals,
+        "quantization_gap": vals["onebit"] - vals["fp32"],
+        "ar_cost_fp32": ar_cost_fp32,
+        "ar_cost_1bit": ar_cost_1bit,
+        "interaction": ar_cost_1bit - ar_cost_fp32,
+        "paired_se_1bit": paired_se,
+        "fp32_perplexity": float(
+            np.mean([r["perplexity"]["perplexity"] for r in by_arm["fp32"]])
+        ),
+        "seeds": {arm: len(by_arm.get(arm, [])) for arm, _ in COLUMNS},
+    }
+
+
 def interaction(by_arm) -> str | None:
     """(onebit_ar - onebit) - (fp32_ar - fp32), the headline quantity.
 
@@ -238,42 +279,39 @@ def interaction(by_arm) -> str | None:
     In log space the same subtraction is a ratio of ratios, which is what
     "does AR buy more under binarization" actually asks.
     """
-    def mean_nll(arm):
-        rows = by_arm.get(arm, [])
-        return float(np.mean([r["perplexity"]["nll"] for r in rows])) if rows else None
-
-    vals = {a: mean_nll(a) for a, _ in COLUMNS}
-    if any(v is None for v in vals.values()):
-        return None
-
-    ar_cost_fp32 = vals["fp32_ar"] - vals["fp32"]
-    ar_cost_1bit = vals["onebit_ar"] - vals["onebit"]
-    inter = ar_cost_1bit - ar_cost_fp32
-
-    quant_gap = vals["onebit"] - vals["fp32"]
-
     # Judge the interaction against the noise on its own terms, not against
     # zero. Reporting a sign for a quantity many times smaller than the
     # standard error of one of its components is how a null becomes a claim.
-    nlls = {
-        arm: [r["perplexity"]["nll"] for r in by_arm.get(arm, [])]
-        for arm in ("onebit", "onebit_ar")
-    }
-    paired_se = None
-    if len(nlls["onebit"]) == len(nlls["onebit_ar"]) >= 2:
-        d = np.array(nlls["onebit_ar"]) - np.array(nlls["onebit"])
-        paired_se = float(d.std(ddof=1) / np.sqrt(len(d)))
+    q = derived_quantities(by_arm)
+    if q is None:
+        return None
+
+    ar_cost_fp32 = q["ar_cost_fp32"]
+    ar_cost_1bit = q["ar_cost_1bit"]
+    inter = q["interaction"]
+    quant_gap = q["quantization_gap"]
+    paired_se = q["paired_se_1bit"]
 
     if paired_se is None:
         verdict = "no noise estimate available yet"
         scale = ""
     elif abs(inter) < 2 * paired_se:
         verdict = "**not distinguishable from zero**"
+        # State the ratio in one direction only. An earlier version phrased
+        # it as "SE is Nx the interaction", which reads as strong evidence
+        # when N is large and as its opposite when N drops below 1 -- and it
+        # did drop below 1 once the fifth seed landed. The decision rule is
+        # |interaction| < 2 SE either way.
         scale = (
-            f"\n\nThe paired standard error on the 1-bit AR term alone is "
-            f"{paired_se:.4f} nats, {paired_se/abs(inter):.1f}x the interaction "
-            f"itself. **The attention residual does not preferentially repair "
-            f"binarization damage.**"
+            f"\n\nThe paired standard error on the 1-bit AR term is "
+            f"{paired_se:.4f} nats; the interaction is {abs(inter)/paired_se:.1f}x "
+            f"that, inside the 2 SE rule fixed in advance. The FP32 arms "
+            f"contribute one seed each, so their variance is absent from this "
+            f"estimate and the true standard error on the interaction is "
+            f"larger than the one quoted. **No evidence that the attention "
+            f"residual preferentially repairs binarization damage; the "
+            f"measurement does not have the resolution to rule out an effect "
+            f"of this size either.**"
         )
     else:
         verdict = (
@@ -423,7 +461,12 @@ def alpha_by_depth(by_arm) -> str | None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--write-readme", action="store_true")
-    p.add_argument("--stage", default=None)
+    # Not None. The determinism stage repeats one configuration on purpose;
+    # pooling it into the main table weights `onebit` by however many repeats
+    # happened to run and reports them as distinct seeds. It did: three
+    # replicates of seed 0 turned five seeds into "8" and pulled the mean
+    # 1.3 ppl toward the one seed that was rerun.
+    p.add_argument("--stage", default="full")
     args = p.parse_args()
 
     by_arm = load(args.stage)
