@@ -106,6 +106,31 @@ def _batches(windows: mx.array, cfg: TrainConfig):
         yield chunk[:, :-1], chunk[:, 1:]
 
 
+def _diffusion_batches(windows: mx.array, cfg: TrainConfig):
+    """The same stream, plus a corruption drawn from the same seed.
+
+    The whole window is both input and target -- there is no shift, because
+    a denoiser predicts the token at the position it is looking at. The
+    corruption comes from the seeded numpy generator rather than from MLX so
+    that a PyTorch run at the same seed sees the identical masks, which is
+    what makes the two backends comparable and the seeds paired.
+    """
+    from ..diffusion import MIN_RATE
+
+    rng = np.random.default_rng(cfg.seed)
+    n = windows.shape[0]
+    need = cfg.steps * cfg.grad_accum * cfg.batch_size
+    order = np.concatenate(
+        [rng.permutation(n) for _ in range(need // n + 1)]
+    )[:need]
+    for i in range(0, need, cfg.batch_size):
+        chunk = windows[order[i : i + cfg.batch_size].tolist()]
+        B, L = chunk.shape
+        rates = MIN_RATE + (1.0 - MIN_RATE) * rng.random((B, 1))
+        mask = rng.random((B, L)) < rates
+        yield chunk, mx.array(rates.astype(np.float32)), mx.array(mask)
+
+
 def run_qat(
     model_config: ModelConfig,
     train_config: TrainConfig,
@@ -127,11 +152,19 @@ def run_qat(
         betas=[0.9, 0.95],
     )
 
-    def loss_fn(m, inputs, labels):
-        return m.loss(inputs, labels)
+    diffusion = model_config.diffusion
+    if diffusion:
+        def loss_fn(m, inputs, rates, mask):
+            return m.diffusion_loss(inputs, rates, mask)
+
+        stream = _diffusion_batches(mx.array(windows), train_config)
+    else:
+        def loss_fn(m, inputs, labels):
+            return m.loss(inputs, labels)
+
+        stream = _batches(mx.array(windows), train_config)
 
     grad_fn = nn.value_and_grad(model, loss_fn)
-    stream = _batches(mx.array(windows), train_config)
 
     result = TrainResult(final_train_loss=float("nan"))
     t_start = time.perf_counter()
@@ -143,8 +176,7 @@ def run_qat(
         accumulated = None
         step_loss = 0.0
         for _ in range(train_config.grad_accum):
-            inputs, labels = next(stream)
-            loss, grads = grad_fn(model, inputs, labels)
+            loss, grads = grad_fn(model, *next(stream))
             accumulated = (
                 grads
                 if accumulated is None

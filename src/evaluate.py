@@ -29,7 +29,9 @@ from .data import MultipleChoiceTask, make_strided_windows
 
 __all__ = [
     "PerplexityResult",
+    "DiffusionResult",
     "evaluate_perplexity",
+    "evaluate_diffusion_nelbo",
     "evaluate_multiple_choice",
     "evaluate_teacher_divergence",
 ]
@@ -49,6 +51,102 @@ class PerplexityResult:
             "top1_accuracy": self.top1_accuracy,
             "num_tokens": self.num_tokens,
         }
+
+
+@dataclass
+class DiffusionResult:
+    """NELBO per token, and the floor it has to clear to mean anything."""
+
+    nelbo: float
+    uniform_bound: float
+    mask_accuracy: float
+    num_windows: int
+    num_samples: int
+
+    @property
+    def headroom(self) -> float:
+        """Nats below a model that has learned nothing. Negative is worse."""
+        return self.uniform_bound - self.nelbo
+
+    def as_dict(self) -> dict:
+        return {
+            "nelbo": self.nelbo,
+            "uniform_bound": self.uniform_bound,
+            "headroom": self.headroom,
+            "mask_accuracy": self.mask_accuracy,
+            "num_windows": self.num_windows,
+            "num_samples": self.num_samples,
+        }
+
+
+@torch.no_grad()
+def evaluate_diffusion_nelbo(
+    model,
+    tokens: torch.Tensor,
+    device: torch.device,
+    block_size: int = 512,
+    num_samples: int = 4,
+    max_blocks: int | None = None,
+    seed: int = 1234,
+    progress: bool = True,
+) -> DiffusionResult:
+    """Monte Carlo NELBO bound for a masked-diffusion model.
+
+    Not perplexity, and not comparable to it. The autoregressive number
+    factorises a joint likelihood exactly; this is an upper bound on the
+    negative log-likelihood estimated by sampling corruptions. Putting the
+    two in one column would be the single most misleading thing this
+    repository could print.
+
+    The corruption seed is fixed and independent of the training seed, so
+    every arm is scored on identical corruptions and a paired difference
+    between arms is the intervention rather than the draw.
+
+    ``mask_accuracy`` is reported alongside because NELBO keeps moving after
+    a model has stopped being able to name any token -- the same reason the
+    autoregressive side reports top-1 next to perplexity.
+    """
+    from .diffusion import MIN_RATE, diffusion_loss, uniform_bound
+
+    model.eval()
+    usable = (tokens.numel() // block_size) * block_size
+    blocks = tokens[:usable].view(-1, block_size)
+    if max_blocks is not None:
+        blocks = blocks[:max_blocks]
+
+    generator = torch.Generator().manual_seed(seed)
+    total_nelbo, total_correct, total_masked = 0.0, 0, 0
+
+    for index in tqdm(range(blocks.shape[0]), desc="nelbo", disable=not progress):
+        ids = blocks[index : index + 1].to(device)
+        for _ in range(num_samples):
+            rate = MIN_RATE + (1.0 - MIN_RATE) * torch.rand(1, 1, generator=generator)
+            mask = torch.rand(ids.shape, generator=generator) < rate
+            mask = mask.to(device)
+            if not bool(mask.any()):
+                continue
+
+            corrupted = torch.where(
+                mask,
+                torch.full_like(ids, model.config.mask_token_id),
+                ids,
+            )
+            logits = model(input_ids=corrupted)["logits"].float()
+            total_nelbo += float(
+                diffusion_loss(logits, ids, mask, rate.to(device))
+            )
+            predicted = logits.argmax(-1)
+            total_correct += int((predicted[mask] == ids[mask]).sum())
+            total_masked += int(mask.sum())
+
+    draws = max(blocks.shape[0] * num_samples, 1)
+    return DiffusionResult(
+        nelbo=total_nelbo / draws,
+        uniform_bound=uniform_bound(model.config.vocab_size),
+        mask_accuracy=total_correct / max(total_masked, 1),
+        num_windows=int(blocks.shape[0]),
+        num_samples=num_samples,
+    )
 
 
 @torch.no_grad()
