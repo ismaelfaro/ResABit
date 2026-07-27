@@ -12,9 +12,16 @@ run on a single Apple Silicon machine, combining:
   sum of all prior attention outputs and re-injects it through a learnable
   per-layer gate.
 
-Status: **experiment running.** Results land in `results/ledger.jsonl`; the
-table below is filled from it and is empty until it is. There is no
-"recoverable" placeholder in this README where a number belongs.
+**Answer: no measurable interaction.** The residual does not preferentially
+repair binarization damage; the gates converge *negative*, and they do so in
+FP32 too. Binarizing 308M of 464M parameters costs 2.97 nats — a 19.5x
+perplexity increase — at this recovery budget.
+
+Status: **2x2 complete**, 15 runs in `results/ledger.jsonl`, five paired
+seeds on the contested pair. Every number below is generated from that ledger
+by `report.py` and traces to a row carrying its arm, seed and git commit.
+Open items are listed as TODOs in [docs/PROTOCOL.md](docs/PROTOCOL.md) §8
+rather than left implied.
 
 ---
 
@@ -49,10 +56,10 @@ noise floor. See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the full argument.
 <!-- RESULTS-TABLE-START -->
 | metric | FP32 +FT | FP32 +FT +AR | 1-bit QAT | 1-bit QAT +AR |
 |---|---|---|---|---|
-| wikitext-2 ppl (strided) | 14.653 | 14.827 | 284.371 ± 2.989 | 283.098 ± 8.749 |
-| wikitext-2 NLL | 2.6846 | 2.6965 | 5.6502 ± 0.0105 | 5.6454 ± 0.0307 |
-| wikitext-2 top-1 acc | 0.4739 | 0.4717 | 0.2098 ± 0.0009 | 0.2104 ± 0.0030 |
-| final train loss | 2.8455 | 2.8653 | 5.7215 ± 0.0267 | 5.7229 ± 0.0432 |
+| wikitext-2 ppl (strided) | 14.653 | 14.827 | 285.669 ± 3.165 | 283.098 ± 8.749 |
+| wikitext-2 NLL | 2.6846 | 2.6965 | 5.6548 ± 0.0110 | 5.6454 ± 0.0307 |
+| wikitext-2 top-1 acc | 0.4739 | 0.4717 | 0.2095 ± 0.0010 | 0.2104 ± 0.0030 |
+| final train loss | 2.8455 | 2.8653 | 5.7300 ± 0.0317 | 5.7229 ± 0.0432 |
 | KL to shipped Qwen (nats) | 1.5953 | 1.5952 | 3.9582 | 3.9792 |
 | top-1 agreement with shipped Qwen | 0.6412 | 0.6432 | 0.2774 | 0.2715 |
 | ARC-Easy acc (±0.0096 SE) | 0.5417 | 0.5429 | 0.2622 | 0.2639 |
@@ -60,8 +67,8 @@ noise floor. See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the full argument.
 | LAMBADA acc (±0.0105 SE) | 0.3360 | 0.3180 | 0.0000 | 0.0000 |
 | bits/weight (quantised params) | 32 | 32 | 1.125 | 1.125 |
 | learned alpha, mean / max (layers 1+) | — | -0.0141 / 0.0345 | — | -0.0522 / 0.0988 |
-| seeds | 1 | 1 | 8 | 5 |
-| wall-clock per run (s) | 1746 | 1741 | 2037 ± 1028 | 1844 ± 289 |
+| seeds | 1 | 1 | 5 | 5 |
+| wall-clock per run (s) | 1746 | 1741 | 2299 ± 1273 | 1844 ± 289 |
 
 ### Noise floor (identical reruns)
 
@@ -87,19 +94,21 @@ noise floor. See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the full argument.
 
 | arm | perplexities | mean | sd |
 |---|---|---|---|
-| `onebit` | [282.208, 283.768, 286.369, 285.441, 290.561, 282.208, 282.208, 282.208] | 284.371 | 2.989 |
+| `onebit` | [282.208, 283.768, 286.369, 285.441, 290.561] | 285.669 | 3.165 |
 | `onebit_ar` | [295.324, 289.176, 275.536, 279.291, 276.164] | 283.098 | 8.749 |
 
-**`onebit_ar` is 2.9x more variable across seeds than `onebit` while not being better on average.** Variance ratio 8.6 on 7 and 4 degrees of freedom. A spread estimated from 8 runs is itself unstable, so treat the ratio as an order of magnitude, not a measurement.
+**`onebit_ar` is 2.8x more variable across seeds than `onebit` while not being better on average.** Variance ratio 7.6 on 4 and 4 degrees of freedom. The 95% critical value of F(4,4) is 6.39, so this clears it. A spread estimated from 5 runs is itself unstable, so treat the ratio as an order of magnitude, not a measurement.
 
 ### Derived quantities
 
 All quantities in nats of NLL; perplexity ratios in parentheses.
 
-- Quantization cost (no AR): **+2.9656** nats (19.4x perplexity)
+- Quantization cost (no AR): **+2.9702** nats (19.5x perplexity)
 - AR cost at FP32: **+0.0118** nats (1.012x)
-- AR cost at 1-bit: **-0.0048** nats (0.995x)
-- Interaction: -0.0166 nats — no noise estimate available yet
+- AR cost at 1-bit: **-0.0094** nats (0.991x)
+- Interaction: -0.0212 nats — **not distinguishable from zero**
+
+The paired standard error on the 1-bit AR term is 0.0181 nats; the interaction is 1.2x that, inside the 2 SE rule fixed in advance. The FP32 arms contribute one seed each, so their variance is absent from this estimate and the true standard error on the interaction is larger than the one quoted. **No evidence that the attention residual preferentially repairs binarization damage; the measurement does not have the resolution to rule out an effect of this size either.**
 
 ### Gate trajectories
 
@@ -121,13 +130,20 @@ numbers are reported:
 
 | | parameters | bits/weight |
 |---|---|---|
-| Block projections (q, k, v, o, gate, up, down) | 302M | **1.125** |
-| Embeddings + tied readout, norms, attention biases | 162M | 32 |
-| **Model average** | **464M** | **~11.8** |
+| Block projections (q, k, v, o, gate, up, down) | 308.3M | **1.125** |
+| Embeddings + tied readout, norms, attention biases | 155.7M | 32 |
+| **Model average** | **464.0M** | **11.49** |
 
 Embeddings and the readout stay full precision, standard for the BitNet
 family. The compression story is about the projections; the model-wide
 average is what an honest checkpoint-size claim rests on.
+
+These come from `ModelConfig.num_quantized_params` and
+`effective_bits_per_weight`, and they are confirmed by what an exported
+checkpoint actually weighs: **666 MB, of which 43 MB is the binarised
+projections and 623 MB is the FP32 embedding table.** An earlier revision of
+this table was hand-typed as 302M / 162M / ~11.8 and had drifted from the
+code — the kind of small dishonesty this section exists to prevent.
 
 ---
 
@@ -164,6 +180,55 @@ python report.py
 
 ---
 
+## Checkpoints
+
+The sweep evaluated each arm inside the training process and threw the model
+away, so none of the reported arms existed on disk. Rebuild one:
+
+```bash
+python export_checkpoint.py --arm onebit --seed 0
+```
+
+The rebuild is not an approximation of the run behind the table — the
+pipeline is bitwise reproducible, and the export aborts if it misses the
+ledger's perplexity rather than shipping a checkpoint no table describes.
+
+**A frozen checkpoint does not compute the ledger's number.** The ledger
+records the training forward: FP32 master weights pushed through
+`fake_quantize` on every call. Freezing stores the group scales as FP16,
+which moves each layer by ~2e-4 relative — and `sign()` is a discontinuity,
+so that does not stay at 2e-4 through 24 layers. The export measures both and
+the model card quotes the frozen one.
+
+Score a checkpoint on the held-out suite without retraining:
+
+```bash
+python eval_checkpoint.py checkpoints/resabit-onebit-seed0
+```
+
+### Publishing one
+
+The card is generated from the checkpoint's own manifest, for the same reason
+the results table is generated from the ledger — bits per weight and the
+perplexity the file actually computes are exactly the two numbers a human
+would retype wrong.
+
+```bash
+python make_model_card.py checkpoints/resabit-onebit-seed0
+```
+
+Upload is a dry run by default and refuses to publish a checkpoint whose card
+does not quote its own frozen perplexity:
+
+```bash
+python upload_to_hf.py checkpoints/resabit-onebit-seed0 --repo <user>/resabit-1bit
+```
+
+The released weights are research artifacts. At ~285 perplexity the model
+does not produce coherent text, and the card leads with that.
+
+---
+
 ## Layout
 
 ```
@@ -180,10 +245,16 @@ src/
 
 run_ablation.py        The 2x2 sweep: paired seeds, JSONL ledger
 report.py              Ledger -> results table
+export_checkpoint.py   Retrain one arm -> frozen, publishable checkpoint
+eval_checkpoint.py     Score a checkpoint without retraining it
+make_model_card.py     Checkpoint manifest -> model card
+upload_to_hf.py        Preflight + push to the Hub (dry run by default)
 convert.py             HF weights -> frozen 1-bit checkpoint
 inference.py           Generation from a checkpoint
 tests/                 Parity against HuggingFace and across backends
 docs/PROTOCOL.md       Why the experiment is shaped this way
+paper/preprint.md      The write-up
+paper/post.md          The same result for a general technical audience
 ```
 
 ---

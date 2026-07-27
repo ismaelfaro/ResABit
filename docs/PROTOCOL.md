@@ -133,11 +133,15 @@ head. All arms share a frozen readout so differences come from the blocks.
 capacity confound and needs no width adjustment — unlike most of the prior
 art above, which adds real parameters and therefore does need one.
 
-**Only 302M of 464M parameters are binarised.** Embeddings and the readout
-stay FP32, standard for the BitNet family. So `1.125 bits/weight` is true of
-the quantised projections and false of the model. Both numbers are reported
+**Only 308.3M of 464.0M parameters are binarised.** Embeddings and the
+readout stay FP32, standard for the BitNet family. So `1.125 bits/weight` is
+true of the quantised projections and false of the model, whose average is
+11.49. Both numbers are reported
 (`ModelConfig.bits_per_quantized_weight` and `effective_bits_per_weight`).
-Quoting only the first would be the single easiest thing to catch.
+Quoting only the first would be the single easiest thing to catch — and note
+that the way this goes wrong in practice is not a deliberate overclaim but a
+hand-typed table drifting from the code, which is what happened here: the
+README carried 302M / 162M / ~11.8 for several revisions.
 
 **One deliberate asymmetry, declared.** The residual gates get an effective
 learning rate 10x the base, via `DecoderLayer.ALPHA_GAIN`. AdamW takes steps
@@ -164,6 +168,10 @@ sampling noise. Chosen because a 0.5B model is meaningfully above chance on
 them; WinoGrande and MMLU are at chance at this scale and would only add
 noise. Reported with binomial standard error, because a 1.5-point gap on 2376
 items is not a result.
+
+**PIQA is implemented and was never scored — see the TODO in §8.** It is in
+`AVAILABLE_TASKS` and reads as if it ran. It did not, and the reason was a
+broken loader rather than a decision.
 
 **Teacher divergence — KL to the FP32 model, and top-1 agreement.** This is
 the metric that carries the ablation and the reason to expect a usable
@@ -293,6 +301,38 @@ Followed by the two derived quantities that are the actual result:
 - **MLX Metal matmul is not true FP32** (~bf16-grade accumulation). Training
   uses it; every reported metric is computed in PyTorch. This is why the two
   backends exist.
+- **No held-out corpus from a second distribution.** Every perplexity here is
+  wikitext-2, which is also the recovery corpus. The suite is held out; the
+  perplexity is not out-of-distribution.
+
+### TODO — PIQA, implemented and never scored
+
+`piqa` is listed in `src/data.py::AVAILABLE_TASKS`, so the repo reads as
+though it were part of the suite. It was not scored on any arm. Two separate
+reasons, and neither was a judgement about the benchmark:
+
+1. The loader was broken. `ybisk/piqa` is a script-based dataset and
+   `datasets` 4.x removed script support outright — `trust_remote_code=True`
+   does not degrade, it raises. **Fixed**: the loader now pins the Hub's
+   auto-converted parquet revision, same 1838 validation rows. All four tasks
+   load.
+2. Scoring it meant retraining. The sweep evaluated inside the training
+   process and discarded the model, so any new benchmark cost 300 optimizer
+   steps per arm. **Fixed**: `export_checkpoint.py` writes a checkpoint and
+   `eval_checkpoint.py` scores one for the price of the forward passes.
+
+What remains is running it. Nothing about the reported conclusions depends on
+it: PIQA is binary, chance 0.5, and both 1-bit arms already sit at chance on
+a 4-way task and at exactly 0.000 on LAMBADA, so it is expected to floor
+alongside them. **That is a prediction, not a measurement, and it should not
+be written up as one.** If PIQA came back meaningfully above chance for a
+1-bit arm, the claim in §4 that accuracy benchmarks cannot separate the 1-bit
+arms would need revisiting.
+
+`eval_checkpoint.py` has not been run end to end against a real checkpoint.
+Its pieces are covered — `tests/test_checkpoint.py` pins the export/reload
+round trip, and the eval functions are the ones the sweep used — but the
+wiring is unexercised.
 
 ---
 
@@ -342,10 +382,17 @@ does not do.
 
 ## 11. The instability finding has a confound, and it is ours
 
-`onebit_ar` came out 4.8x more variable across seeds than `onebit` (sd 10.13
-against 2.10) without being better on average. Before that is reported as a
+`onebit_ar` came out 2.8x more variable across seeds than `onebit` (sd 8.75
+against 3.17) without being better on average. Before that is reported as a
 property of attention residuals, it has to be said what else could produce
 it.
+
+Two things about the magnitude. The variance ratio is 7.6 on 4 and 4 degrees
+of freedom against a 95% critical value of 6.39 — it clears, narrowly. And it
+has been falling as seeds accumulate: 23.2 at three, 7.6 at five. A ratio
+that moves that much with two extra runs is an order of magnitude, not a
+measurement, and this section should be read as naming a candidate effect
+rather than establishing one.
 
 The gates are given an effective learning rate 10x the base
 (`DecoderLayer.ALPHA_GAIN`), a choice made so the arm would not be a no-op
