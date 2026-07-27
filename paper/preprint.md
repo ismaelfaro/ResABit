@@ -148,8 +148,8 @@ head. A shared frozen readout keeps the comparison on the blocks.
 per-seed difference, which cancels shared init and data-order variance.
 
 **Noise floor, measured before the effect.** Two sources are separated: a
-same-seed rerun isolates backend nondeterminism, and varying the seed adds
-init and data order. The decision rule is fixed in advance: if
+same-seed rerun isolates backend nondeterminism (measured at exactly zero on
+this machine), and varying the seed adds init and data order. The decision rule is fixed in advance: if
 `|mean(d)| < 2 SE(d)`, the reported result is *no measurable effect at this
 budget*.
 
@@ -336,8 +336,14 @@ Two consequences. Post-training 1-bit does not merely degrade quality, it
 destabilises the computation, which is an additional argument for QAT beyond
 the usual accuracy one. And any published PTQ-to-1-bit perplexity is
 implementation-dependent unless the backend, the accumulation order and the
-seed are stated. We observed two same-seed three-step runs differing by 7% in
-perplexity from GPU reduction nondeterminism alone.
+seed are stated.
+
+We had expected same-backend nondeterminism to contribute here, and it does
+not: three identical reruns of the 1-bit arm returned 282.208 perplexity
+each time, to the digit. On this machine the pipeline is bitwise
+reproducible, so the entire seed-to-seed spread reported above is genuine
+seed effect and not a mixture of seed effect and kernel noise. The chaos is
+across implementations, not within one.
 
 ---
 

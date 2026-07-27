@@ -315,17 +315,16 @@ def main() -> None:
         train_cfg = TrainConfig(**{**asdict(train_cfg), "steps": 3, "log_every": 1})
     elif args.stage == "determinism":
         # Identical configuration, repeated. Everything that moves between
-        # these runs is backend nondeterminism -- MLX GPU reductions are not
-        # bitwise reproducible, and a binarised network amplifies that. This
-        # is the floor beneath the seed-to-seed floor, and without it a
-        # small paired difference cannot be interpreted at all.
+        # these runs is backend nondeterminism. It measured at exactly zero
+        # on this machine -- three reruns identical to the digit -- but that
+        # is a result, not an assumption. Without it a small paired
+        # difference cannot be attributed to the intervention at all.
         plan = [(ARMS["onebit"], args.seeds[0])] * args.replicates
     elif args.stage == "noise-floor":
         # Two variance sources, measured separately. Re-running one seed
-        # isolates backend nondeterminism (MLX GPU reductions are not
-        # bitwise reproducible); varying the seed adds init and data order
-        # on top. A difference smaller than the first is not even an
-        # experiment.
+        # isolates backend nondeterminism; varying the seed adds init and
+        # data order on top. A difference smaller than the first is not even
+        # an experiment.
         plan = [(ARMS["onebit"], s) for s in args.seeds]
         plan.append((ARMS["onebit"], args.seeds[0]))
     else:

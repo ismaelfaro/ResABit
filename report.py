@@ -68,9 +68,15 @@ def determinism_floor() -> str | None:
         f"- perplexity: {np.round(ppls, 3).tolist()} — "
         f"mean {ppls.mean():.3f}, sd {ppls.std(ddof=1):.3f}, "
         f"range {spread:.3f}\n"
-        f"- NLL: mean {nlls.mean():.4f}, sd {nlls.std(ddof=1):.4f}\n\n"
-        f"**Any paired difference below ~{spread:.1f} ppl is backend "
-        f"nondeterminism, not an effect.**"
+        f"- NLL: mean {nlls.mean():.4f}, sd {nlls.std(ddof=1):.4f}"
+        + (
+            "\n\n**The pipeline is bitwise reproducible: this floor is exactly "
+            "zero, so every bit of seed-to-seed spread is genuine seed "
+            "effect.**"
+            if spread == 0
+            else f"\n\n**Any paired difference below ~{spread:.1f} ppl is "
+            f"backend nondeterminism, not an effect.**"
+        )
     )
 
 
@@ -348,12 +354,26 @@ def stability_comparison(by_arm, a: str, b: str) -> str | None:
 
     note = ""
     if ratio > 4:
+        # A variance estimate from a handful of runs is itself high-variance:
+        # this figure moved from 23.2 at three seeds to 24.2 at four and
+        # again at five. Quote the ratio with its degrees of freedom and the
+        # critical value, never on its own.
+        critical = {2: 19.0, 3: 9.28, 4: 6.39, 5: 5.05, 6: 4.28}
+        df = len(pa) - 1
+        crit = critical.get(df)
+        strength = ""
+        if crit:
+            strength = (
+                f" The 95% critical value of F({df},{df}) is {crit}, so this "
+                + ("clears it" if ratio > crit else "does not clear it")
+                + "."
+            )
         note = (
             f"\n\n**`{b}` is {sd_b/sd_a:.1f}x more variable across seeds than "
-            f"`{a}` while not being better on average.** With "
-            f"{len(pa)} seeds this is a variance ratio of {ratio:.1f} on "
-            f"{len(pa)-1} and {len(pb)-1} degrees of freedom — suggestive, "
-            f"not conclusive, and worth more seeds before it is claimed."
+            f"`{a}` while not being better on average.** Variance ratio "
+            f"{ratio:.1f} on {df} and {len(pb)-1} degrees of freedom.{strength} "
+            f"A spread estimated from {len(pa)} runs is itself unstable, so "
+            f"treat the ratio as an order of magnitude, not a measurement."
         )
     return (
         f"| arm | perplexities | mean | sd |\n|---|---|---|---|\n"

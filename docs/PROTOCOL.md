@@ -185,14 +185,27 @@ The single most important step, and the one autoresearch omits.
 
 Two variance sources are measured separately:
 
-1. **Backend nondeterminism.** Re-run one seed unchanged. MLX's GPU
-   reductions are not bitwise reproducible, and the binarised network
-   amplifies that: two three-step runs at the same seed already differed by
-   **7% in perplexity**. `sign()` sits on a discontinuity, so a one-ulp
-   difference flips a weight and the error compounds with depth
-   (`tests/test_mlx_parity.py` pins this: cross-backend disagreement rises
-   from ~1e-5 unquantised to ~1e-2 binarised, growing monotonically layer
-   over layer).
+1. **Backend nondeterminism — measured at exactly zero.** Three identical
+   reruns of `onebit` at seed 0 returned 282.208 perplexity every time, to
+   the digit, matching the main sweep's run of the same configuration. On
+   this machine the MLX training path and the PyTorch evaluation path are
+   bitwise reproducible, so this floor contributes nothing and every bit of
+   seed-to-seed spread is genuine seed effect.
+
+   An earlier draft of this document claimed 7% here, citing two three-step
+   runs at seed 0 that differed by that much. That was wrong. `ALPHA_GAIN`
+   was introduced between those two runs, so the gates moved at different
+   rates and the models genuinely differed. The underlying claim — that MLX
+   GPU reductions are not bitwise reproducible — was taken from the
+   `rigor.py` docstring in autoresearch's MLX fork and generalised to this
+   setup without being checked. It does not hold here.
+
+   The *cross-backend* result is unaffected and still stands: MLX and
+   PyTorch given identical weights diverge by ~1e-2 relative once the
+   projections are binarised, against ~1e-5 unquantised, growing
+   monotonically with depth (`tests/test_mlx_parity.py`). Two independent
+   implementations disagreeing is a different phenomenon from one
+   implementation being irreproducible, and only the second was refuted.
 
 2. **Seed variance.** Vary init and data order across seeds {0, 1, 2}.
 

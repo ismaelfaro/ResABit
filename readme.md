@@ -49,59 +49,66 @@ noise floor. See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the full argument.
 <!-- RESULTS-TABLE-START -->
 | metric | FP32 +FT | FP32 +FT +AR | 1-bit QAT | 1-bit QAT +AR |
 |---|---|---|---|---|
-| wikitext-2 ppl (strided) | 14.653 | 14.827 | 284.115 ± 2.102 | 286.679 ± 10.127 |
-| wikitext-2 NLL | 2.6846 | 2.6965 | 5.6494 ± 0.0074 | 5.6579 ± 0.0356 |
-| wikitext-2 top-1 acc | 0.4739 | 0.4717 | 0.2091 ± 0.0011 | 0.2087 ± 0.0025 |
-| final train loss | 2.8455 | 2.8653 | 5.7349 ± 0.0243 | 5.7461 ± 0.0356 |
+| wikitext-2 ppl (strided) | 14.653 | 14.827 | 284.371 ± 2.989 | 283.098 ± 8.749 |
+| wikitext-2 NLL | 2.6846 | 2.6965 | 5.6502 ± 0.0105 | 5.6454 ± 0.0307 |
+| wikitext-2 top-1 acc | 0.4739 | 0.4717 | 0.2098 ± 0.0009 | 0.2104 ± 0.0030 |
+| final train loss | 2.8455 | 2.8653 | 5.7215 ± 0.0267 | 5.7229 ± 0.0432 |
 | KL to shipped Qwen (nats) | 1.5953 | 1.5952 | 3.9582 | 3.9792 |
 | top-1 agreement with shipped Qwen | 0.6412 | 0.6432 | 0.2774 | 0.2715 |
 | ARC-Easy acc (±0.0096 SE) | 0.5417 | 0.5429 | 0.2622 | 0.2639 |
 | HellaSwag acc_norm (±0.0146 SE) | 0.4560 | 0.4440 | 0.2590 | 0.2630 |
 | LAMBADA acc (±0.0105 SE) | 0.3360 | 0.3180 | 0.0000 | 0.0000 |
 | bits/weight (quantised params) | 32 | 32 | 1.125 | 1.125 |
-| learned alpha, mean / max (layers 1+) | — | -0.0141 / 0.0345 | — | -0.0520 / 0.0943 |
-| seeds | 1 | 1 | 3 | 3 |
-| wall-clock per run (s) | 1746 | 1741 | 2690 ± 1634 | 1961 ± 338 |
+| learned alpha, mean / max (layers 1+) | — | -0.0141 / 0.0345 | — | -0.0522 / 0.0988 |
+| seeds | 1 | 1 | 8 | 5 |
+| wall-clock per run (s) | 1746 | 1741 | 2037 ± 1028 | 1844 ± 289 |
+
+### Noise floor (identical reruns)
+
+3 identical reruns of `onebit` at seed 0 (same config, same data order, same code):
+
+- perplexity: [282.208, 282.208, 282.208] — mean 282.208, sd 0.000, range 0.000
+- NLL: mean 5.6426, sd 0.0000
+
+**The pipeline is bitwise reproducible: this floor is exactly zero, so every bit of seed-to-seed spread is genuine seed effect.**
 
 ### Paired comparison
 
-`onebit_ar` minus `onebit`, paired over seeds [0, 1, 2]. Decision rule fixed in advance: an effect smaller than 2 SE is reported as no effect.
+`onebit_ar` minus `onebit`, paired over seeds [0, 1, 2, 3, 4]. Decision rule fixed in advance: an effect smaller than 2 SE is reported as no effect.
 
 | metric | per-seed deltas | mean | SE | verdict |
 |---|---|---|---|---|
-| wikitext ppl | [13.117, 5.408, -10.833] | +2.564 | 7.058 | within noise |
-| wikitext NLL | [0.0454, 0.0189, -0.0386] | +0.0086 | 0.0248 | within noise |
-| final train loss | [0.0558, 0.0173, -0.0394] | +0.0113 | 0.0276 | within noise |
-| top-1 acc | [-0.0037, -0.0005, 0.0031] | -0.0004 | 0.0020 | within noise |
+| wikitext ppl | [13.117, 5.408, -10.833, -6.15, -14.398] | -2.571 | 5.151 | within noise |
+| wikitext NLL | [0.0454, 0.0189, -0.0386, -0.0218, -0.0508] | -0.0094 | 0.0181 | within noise |
+| final train loss | [0.0558, 0.0173, -0.0394, -0.0193, -0.05] | -0.0071 | 0.0195 | within noise |
+| top-1 acc | [-0.0037, -0.0005, 0.0031, 0.0016, 0.0042] | +0.0009 | 0.0014 | within noise |
 
 ### Run-to-run stability
 
 | arm | perplexities | mean | sd |
 |---|---|---|---|
-| `onebit` | [282.208, 283.768, 286.369] | 284.115 | 2.102 |
-| `onebit_ar` | [295.324, 289.176, 275.536] | 286.679 | 10.127 |
+| `onebit` | [282.208, 283.768, 286.369, 285.441, 290.561, 282.208, 282.208, 282.208] | 284.371 | 2.989 |
+| `onebit_ar` | [295.324, 289.176, 275.536, 279.291, 276.164] | 283.098 | 8.749 |
 
-**`onebit_ar` is 4.8x more variable across seeds than `onebit` while not being better on average.** With 3 seeds this is a variance ratio of 23.2 on 2 and 2 degrees of freedom — suggestive, not conclusive, and worth more seeds before it is claimed.
+**`onebit_ar` is 2.9x more variable across seeds than `onebit` while not being better on average.** Variance ratio 8.6 on 7 and 4 degrees of freedom. A spread estimated from 8 runs is itself unstable, so treat the ratio as an order of magnitude, not a measurement.
 
 ### Derived quantities
 
 All quantities in nats of NLL; perplexity ratios in parentheses.
 
-- Quantization cost (no AR): **+2.9647** nats (19.4x perplexity)
+- Quantization cost (no AR): **+2.9656** nats (19.4x perplexity)
 - AR cost at FP32: **+0.0118** nats (1.012x)
-- AR cost at 1-bit: **+0.0086** nats (1.009x)
-- Interaction: -0.0032 nats — **not distinguishable from zero**
-
-The paired standard error on the 1-bit AR term alone is 0.0248 nats, 7.6x the interaction itself. **The attention residual does not preferentially repair binarization damage.**
+- AR cost at 1-bit: **-0.0048** nats (0.995x)
+- Interaction: -0.0166 nats — no noise estimate available yet
 
 ### Gate trajectories
 
-- `onebit_ar`: mean |alpha| 0.00003 at start, 0.05326 peak (step 284), 0.05317 final. **gates rose and held** — no sign of inter-path collapse
+- `onebit_ar`: mean |alpha| 0.00003 at start, 0.05323 peak (step 294), 0.05320 final. **gates rose and held** — no sign of inter-path collapse
 - `fp32_ar`: mean |alpha| 0.00003 at start, 0.01715 peak (step 160), 0.01536 final. **gates rose and held** — no sign of inter-path collapse
 
 ### Gate profile by depth
 
-- `onebit_ar` (3 seed(s)): early -0.0614, middle -0.0702, late -0.0255. 22/23 live gates are negative — the pathway is being used to damp the residual stream, not to enrich it.
+- `onebit_ar` (5 seed(s)): early -0.0637, middle -0.0691, late -0.0252. 22/23 live gates are negative — the pathway is being used to damp the residual stream, not to enrich it.
 - `fp32_ar` (1 seed(s)): early -0.0186, middle -0.0150, late -0.0091. 22/23 live gates are negative — the pathway is being used to damp the residual stream, not to enrich it.
 <!-- RESULTS-TABLE-END -->
 
