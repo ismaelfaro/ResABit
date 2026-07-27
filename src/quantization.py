@@ -14,7 +14,13 @@ Three forward paths
     forward pass sees exactly the values the quantised model will use.
 ``dequant`` (default after :meth:`OneBitLinear.quantize`)
     Unpack bits, rebuild the FP32 matrix, ``F.linear``. This is the reference
-    and is bit-exact with the training forward.
+    path for a frozen checkpoint. It is *not* bit-exact with the training
+    forward: ``quantize`` stores the group scales as FP16, which moves the
+    layer output by ~2e-4 relative. ``tests/test_quantization.py`` pins that
+    gap. It is small per layer and it is not free -- ``sign()`` is a
+    discontinuity, so the perturbation compounds with depth, and a frozen
+    checkpoint's perplexity has to be measured on this path rather than
+    inherited from the training-forward number.
 ``int8``
     Grouped INT8 GEMM. Opt-in, and asserted equivalent to ``dequant`` in
     ``tests/test_quantization.py``.
@@ -253,7 +259,16 @@ class OneBitLinear(nn.Module):
         del self._parameters["weight"]
         self.register_parameter("weight", None)
 
-    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
         # A quantised checkpoint has no `weight` and carries buffers whose
         # shapes differ from the freshly constructed placeholders.
         flag = state_dict.get(prefix + "quantized")
@@ -265,7 +280,23 @@ class OneBitLinear(nn.Module):
                 key = prefix + name
                 if key in state_dict:
                     setattr(self, name, torch.empty_like(state_dict[key]))
-        return super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
+                else:
+                    # These buffers are registered as None until a checkpoint
+                    # fills them, and PyTorch drops None buffers from its
+                    # missing-key accounting. So a file claiming `quantized`
+                    # while shipping no bits loads without a word and dies at
+                    # the first forward. Report it as missing here, which is
+                    # the whole point of refusing a partial map.
+                    missing_keys.append(key)
+        return super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def storage_bytes(self) -> int:
         """Bytes this layer occupies on disk once frozen."""
