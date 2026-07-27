@@ -32,7 +32,7 @@ quantization gap is measured against the wrong thing.
 Measured, once the runs came in: Qwen1.5-0.5B-Chat scores 25.005 perplexity
 on wikitext-2 as shipped and 14.653 after the same 1.23M-token recovery the
 1-bit arms receive. So the naive comparison **understates** binarization
-damage -- 2.430 nats against the shipped model versus 2.965 nats against the
+damage -- 2.435 nats against the shipped model versus 2.970 nats against the
 matched baseline, a factor of 1.7 in the perplexity ratio. An earlier draft
 of this document had that direction backwards.
 
