@@ -8,6 +8,7 @@ accounted for, and reports exactly what moved.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import torch
@@ -15,7 +16,13 @@ import torch
 from .config import ModelConfig
 from .model import ResABitForCausalLM
 
-__all__ = ["load_hf_state_dict", "remap_qwen2_keys", "load_pretrained", "HF_MODEL_ID"]
+__all__ = [
+    "load_hf_state_dict",
+    "remap_qwen2_keys",
+    "load_pretrained",
+    "load_checkpoint",
+    "HF_MODEL_ID",
+]
 
 HF_MODEL_ID = "Qwen/Qwen1.5-0.5B-Chat"
 
@@ -103,3 +110,43 @@ def load_pretrained(
             f"  parameters            : {model.num_parameters()/1e6:.1f}M"
         )
     return model
+
+
+def load_checkpoint(
+    path: str | Path,
+    device: torch.device | str | None = None,
+) -> tuple[ResABitForCausalLM, dict]:
+    """Load an exported checkpoint directory: safetensors weights + manifest.
+
+    Accepts either the manifest written by ``export_checkpoint.py`` (model
+    config nested under ``model_config``, alongside the metrics the card
+    quotes) or a bare ``ModelConfig`` dump from ``convert.py``.
+
+    ``lm_head.weight`` is deliberately absent from the file -- it aliases the
+    embedding table and safetensors will not store aliased memory. The tie is
+    rebuilt from the config here, so its absence is expected and any *other*
+    missing key is still an error.
+    """
+    from safetensors.torch import load_file
+
+    directory = Path(path)
+    if directory.is_file():                      # tolerate .../model.safetensors
+        directory = directory.parent
+
+    manifest = json.loads((directory / "config.json").read_text())
+    config = ModelConfig.from_dict(manifest.get("model_config", manifest))
+
+    model = ResABitForCausalLM(config)
+    state = load_file(str(directory / "model.safetensors"))
+    missing, unexpected = model.load_state_dict(state, strict=False)
+
+    allowed_missing = {"lm_head.weight"} if config.tie_word_embeddings else set()
+    if set(missing) - allowed_missing or unexpected:
+        raise RuntimeError(
+            "refusing to load a partially mapped checkpoint\n"
+            f"  missing    : {sorted(set(missing) - allowed_missing)}\n"
+            f"  unexpected : {sorted(unexpected)}"
+        )
+
+    model.eval()
+    return (model.to(device) if device is not None else model), manifest
