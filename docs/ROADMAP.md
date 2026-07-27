@@ -99,14 +99,32 @@ HuggingFace.
 3. **The grid.** {FP32, ternary} x {autoregressive, diffusion} at matched
    budget, paired seeds, measured noise floor.
 
-**The check that comes before all of it.** An AR-pretrained model adapted to
-diffusion on 1.23M tokens may land at or near uniform, and quantization
-damage cannot be measured on top of a model that has already floored — this
-repository has that failure once already, in accuracy benchmarks that could
-not separate two 1-bit arms because both sat at chance. So the first thing to
-run is the FP32 diffusion arm alone, to establish that its likelihood bound
-is meaningfully below uniform. If it is not, the budget is the finding and
-the grid is not worth running.
+**The check that came before all of it — passed.** An AR-pretrained model
+adapted to diffusion on 1.23M tokens might have landed at the uniform floor,
+and quantization damage cannot be measured on top of a model that has already
+floored; this repository has that failure once already, in accuracy
+benchmarks that could not separate two 1-bit arms because both sat at chance.
+So the FP32 diffusion arm ran alone first.
+
+| | NELBO | mask accuracy |
+|---|---|---|
+| uniform floor, `log(151936)` | 11.9312 | — |
+| Qwen1.5-0.5B, no adaptation | 10.5390 | 0.0081 |
+| after 1.23M tokens | **3.8761** | **0.2747** |
+
+The adaptation moves the bound 6.66 nats and ends 8.06 below the floor. Mask
+accuracy goes from under 1% to 27%: the model names better than a quarter of
+the tokens it cannot see. Whatever quantization does to this, there is room
+to measure it. 48 validation blocks of 512 tokens, 4 corruptions each, fixed
+evaluation seed. 1273 s on an M5.
+
+Two things not to read into that number. **3.876 nats is not comparable to
+the autoregressive perplexity** anywhere else in this repository — masked
+prediction with bidirectional context is a different and easier task than
+next-token prediction, so a lower bound here does not mean a better model.
+And the training loss stays visibly noisy to the end (last-ten mean 4.567,
+individual steps between 3.19 and 5.52), which is the `1/t` weight doing what
+it is expected to do rather than instability.
 
 ## Status of the autoregressive work
 
