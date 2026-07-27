@@ -95,7 +95,24 @@ HuggingFace.
    mask token, the masked-diffusion objective, an iterative sampler, and a
    likelihood-bound evaluator. PyTorch reference first, MLX port pinned
    against it, exactly as the autoregressive side is.
-2. **Ternary.** The quantizer, the 5-trits-per-byte packer, the accounting.
+2. **Ternary — done.** `quant_scheme="q1_58"`: {−1, 0, +1} with an absmean
+   group scale, five trits to a byte, **1.725 bits/weight** against Q1_0's
+   1.125 and an information-theoretic floor of log2(3) = 1.585.
+
+   The scale statistic is the part that does not survive being guessed. Q1_0
+   divides by the group maximum, which is right for `sign()`. Reusing a
+   maximum with ternary levels rounds every weight below half the group's
+   largest to zero — 85% of a Gaussian matrix, at 0.83 relative
+   reconstruction error, against 35/31/34 and 0.44 for absmean. Both versions
+   train and produce a falling loss. The scheme therefore carries its scale
+   rather than exposing it, and the split is pinned in a test.
+
+   Two things the tests exist for: the freeze reduction must match the
+   training forward's (an absmax freeze against an absmean forward gives a
+   model that trains normally and collapses on export), and the scheme has to
+   survive a checkpoint round trip (`scheme` is a plain attribute, so a
+   ternary checkpoint loaded into a binary layer decodes base-3 bytes as bit
+   fields — it loads clean and every weight is wrong).
 3. **The grid.** {FP32, ternary} x {autoregressive, diffusion} at matched
    budget, paired seeds, measured noise floor.
 

@@ -262,3 +262,69 @@ def test_corruption_conditions_the_forward_pass(hf_state):
     # The headroom that licenses training on one backend and measuring on the
     # other. Binarization moves the logits by ~1e-2.
     assert max(deltas.values()) < 1e-3, f"corrupted forward drifted: {deltas}"
+
+
+def test_ternary_fake_quantize_kernels_agree():
+    """Written twice, once per framework, and a mismatch looks like an effect.
+
+    The ternary kernel has a rounding boundary the binary one does not: a
+    weight at exactly half the group mean sits on the edge between 0 and 1,
+    and the two frameworks must break that tie the same way.
+    """
+    from src.mlx_backend.model import ternary_fake_quantize as mlx_ternary
+    from src.quantization import ternary_fake_quantize as torch_ternary
+
+    rng = np.random.default_rng(0)
+    w = rng.standard_normal((256, 512)).astype(np.float32)
+
+    expected = torch_ternary(torch.from_numpy(w), 128).numpy()
+    actual = np.array(mlx_ternary(mx.array(w), 128))
+    assert np.abs(actual - expected).max() < 1e-6
+
+
+def test_ternary_backends_agree_on_a_real_model(hf_state):
+    delta = _relative_delta(
+        ModelConfig(quantize_linear=True, use_attention_residuals=False,
+                    quant_scheme="q1_58"),
+        hf_state,
+        mx.cpu,
+    )
+    # Ternary is a discontinuous map like sign(), so the same amplification
+    # applies and the bound is loose for the same reason.
+    assert delta < 0.1, f"relative delta = {delta:.2e}"
+
+
+def test_ternary_keeps_more_of_the_model_than_binary(hf_state):
+    """1.725 bits should damage an un-retrained model less than 1.125 does.
+
+    Not a claim about the trained arms -- QAT recovers what post-training
+    quantization destroys, and this repository's whole point is that the two
+    regimes differ. It is a sanity check that the extra level is being used
+    at all: a ternary path that silently behaved like the binary one would
+    pass every kernel test and show up here.
+    """
+    from src.evaluate import evaluate_perplexity
+    from src.data import load_wikitext_tokens
+    from transformers import AutoTokenizer
+    from src.loader import HF_MODEL_ID
+
+    tokenizer = AutoTokenizer.from_pretrained(HF_MODEL_ID)
+    tokens = load_wikitext_tokens(tokenizer, "validation")[:8192]
+    device = torch.device("cpu")
+
+    scores = {}
+    for scheme in ("q1_0", "q1_58"):
+        model = load_pretrained(
+            ModelConfig(quantize_linear=True, use_attention_residuals=False,
+                        quant_scheme=scheme),
+            hf_state=hf_state,
+            verbose=False,
+        ).eval()
+        scores[scheme] = evaluate_perplexity(
+            model, tokens, device, progress=False
+        ).nll
+        del model
+
+    assert scores["q1_58"] < scores["q1_0"], (
+        f"ternary should be less destructive than binary before training: {scores}"
+    )

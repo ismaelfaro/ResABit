@@ -2,11 +2,11 @@
 
 from .config import ModelConfig
 from .model import ResABitForCausalLM
-from .quantization import OneBitLinear, quantize_model_weights
+from .quantization import LowBitLinear, quantize_model_weights
 
 __all__ = [
     "ModelConfig",
     "ResABitForCausalLM",
-    "OneBitLinear",
+    "LowBitLinear",
     "quantize_model_weights",
 ]

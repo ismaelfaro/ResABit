@@ -12,7 +12,7 @@ Three forward paths
 ``train``
     Full-precision master weights with a straight-through estimator, so the
     forward pass sees exactly the values the quantised model will use.
-``dequant`` (default after :meth:`OneBitLinear.quantize`)
+``dequant`` (default after :meth:`LowBitLinear.quantize`)
     Unpack bits, rebuild the FP32 matrix, ``F.linear``. This is the reference
     path for a frozen checkpoint. It is *not* bit-exact with the training
     forward: ``quantize`` stores the group scales as FP16, which moves the
@@ -49,12 +49,24 @@ import torch.nn.functional as F
 
 __all__ = [
     "ste_sign",
+    "ste_round_clamp",
     "fake_quantize",
+    "ternary_fake_quantize",
     "pack_bits",
     "unpack_bits",
-    "OneBitLinear",
+    "pack_trits",
+    "unpack_trits",
+    "TRITS_PER_BYTE",
+    "bits_per_weight",
+    "LowBitLinear",
     "quantize_model_weights",
 ]
+
+# 3^5 = 243 <= 256, so five ternary digits fit in one byte with 13 codes to
+# spare: 8/5 = 1.6 bits per weight against the information-theoretic
+# log2(3) = 1.585. Four per byte would be 2.0 bits and waste a fifth of the
+# space for nothing.
+TRITS_PER_BYTE = 5
 
 
 # -- Straight-through estimator ------------------------------------------
@@ -80,6 +92,29 @@ def ste_sign(x: torch.Tensor) -> torch.Tensor:
     return _STESign.apply(x)
 
 
+class _STERoundClamp(torch.autograd.Function):
+    """round-then-clamp forward, clipped identity backward.
+
+    Unlike the binary estimator this clip mask genuinely fires. The ternary
+    scale is a mean, not a maximum, so ``w/scale`` runs past 1 for every
+    weight above average magnitude -- about a third of them.
+    """
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(x)
+        return torch.clamp(torch.round(x), -1.0, 1.0)
+
+    @staticmethod
+    def backward(ctx, grad: torch.Tensor) -> torch.Tensor:
+        (x,) = ctx.saved_tensors
+        return grad * (x.abs() <= 1.0).to(grad.dtype)
+
+
+def ste_round_clamp(x: torch.Tensor) -> torch.Tensor:
+    return _STERoundClamp.apply(x)
+
+
 def fake_quantize(weight: torch.Tensor, group_size: int) -> torch.Tensor:
     """Round-trip a weight matrix through Q1_0 while staying differentiable."""
     out_features, in_features = weight.shape
@@ -88,6 +123,34 @@ def fake_quantize(weight: torch.Tensor, group_size: int) -> torch.Tensor:
     # w / scales lands in [-1, 1], so the STE clip mask never fires here; it
     # exists to keep the estimator well behaved if scales are ever frozen.
     return (ste_sign(w / scales) * scales).view(out_features, in_features)
+
+
+def ternary_fake_quantize(weight: torch.Tensor, group_size: int) -> torch.Tensor:
+    """Round-trip through Q1_58 -- {-1, 0, +1} with an absmean group scale.
+
+    **The scale statistic is not interchangeable with the binary one.** Q1_0
+    divides by the group maximum, which is correct there because sign() only
+    needs the sign. Reusing a maximum here rounds every weight below half the
+    group's largest to zero: measured on Gaussian weights that is 85% of them,
+    at 0.83 relative reconstruction error. The absmean scale of BitNet b1.58
+    splits 35/31/34 across the three levels at 0.44.
+
+    Both versions train, both produce a falling loss, and only one of them
+    represents the matrix. ``tests/test_quantization.py`` pins the split.
+    """
+    out_features, in_features = weight.shape
+    w = weight.float().view(out_features, in_features // group_size, group_size)
+    scales = w.abs().mean(dim=-1, keepdim=True).clamp(min=1e-8)
+    return (ste_round_clamp(w / scales) * scales).view(out_features, in_features)
+
+
+def bits_per_weight(scheme: str, group_size: int) -> float:
+    """Storage cost of one weight, scale amortised over its group."""
+    if scheme == "q1_0":
+        return 1.0 + 16.0 / group_size
+    if scheme == "q1_58":
+        return 8.0 / TRITS_PER_BYTE + 16.0 / group_size
+    raise ValueError(f"unknown quantization scheme {scheme!r}")
 
 
 # -- Bit packing ----------------------------------------------------------
@@ -112,6 +175,36 @@ def unpack_bits(packed: torch.Tensor, in_features: int) -> torch.Tensor:
     shifts = torch.arange(8, dtype=torch.uint8, device=packed.device)
     bits = (packed.unsqueeze(-1) >> shifts) & 1
     return bits.reshape(packed.shape[0], -1)[:, :in_features].float()
+
+
+# -- Trit packing ---------------------------------------------------------
+# Base-3, five digits per byte. Not bit shifts: a trit is not a power of two,
+# and the arithmetic has to be done in a type that holds 3^5 = 243 without
+# wrapping, which uint8 does only just. The intermediate accumulation is
+# int16 for that reason -- the binary packer's int8 shift table overflowing
+# on bit 7 is a bug this file already carries a scar from.
+
+
+def pack_trits(values: torch.Tensor) -> torch.Tensor:
+    """[out, in] of {-1,0,+1} -> uint8 [out, ceil(in/5)], least significant trit first."""
+    out_features, in_features = values.shape
+    n_bytes = (in_features + TRITS_PER_BYTE - 1) // TRITS_PER_BYTE
+    pad = n_bytes * TRITS_PER_BYTE - in_features
+    shifted = (values + 1).to(torch.int16)          # {-1,0,1} -> {0,1,2}
+    if pad:
+        shifted = F.pad(shifted, (0, pad))
+
+    powers = (3 ** torch.arange(TRITS_PER_BYTE, device=values.device)).to(torch.int16)
+    grouped = shifted.view(out_features, n_bytes, TRITS_PER_BYTE)
+    return (grouped * powers).sum(dim=-1).to(torch.uint8)
+
+
+def unpack_trits(packed: torch.Tensor, in_features: int) -> torch.Tensor:
+    """uint8 [out, n_bytes] -> float32 [out, in_features] of {-1.0, 0.0, 1.0}."""
+    powers = (3 ** torch.arange(TRITS_PER_BYTE, device=packed.device)).to(torch.int16)
+    digits = (packed.unsqueeze(-1).to(torch.int16) // powers) % 3
+    flat = digits.reshape(packed.shape[0], -1)[:, :in_features]
+    return flat.float() - 1.0
 
 
 # -- Grouped INT8 GEMM ----------------------------------------------------
@@ -153,8 +246,20 @@ def _grouped_int8_gemm(
 # -- 1-bit linear layer ---------------------------------------------------
 
 
-class OneBitLinear(nn.Module):
-    """``nn.Linear`` replacement backed by Q1_0_g128 weights."""
+# Persisted as a number, because a checkpoint that forgets its scheme
+# decodes ternary trits as binary bits and produces a plausible, wrong model.
+_SCHEME_CODES = {"q1_0": 0, "q1_58": 1}
+_SCHEME_NAMES = {code: name for name, code in _SCHEME_CODES.items()}
+
+
+class LowBitLinear(nn.Module):
+    """``nn.Linear`` replacement backed by sub-2-bit weights.
+
+    ``scheme='q1_0'`` is one sign bit with an absmax group scale;
+    ``scheme='q1_58'`` is {-1, 0, +1} with an absmean group scale. The scale
+    statistic travels with the scheme and is not a separate knob -- see
+    :func:`ternary_fake_quantize`.
+    """
 
     def __init__(
         self,
@@ -163,6 +268,7 @@ class OneBitLinear(nn.Module):
         bias: bool = False,
         group_size: int = 128,
         int8_inference: bool = False,
+        scheme: str = "q1_0",
     ) -> None:
         super().__init__()
         if in_features % group_size:
@@ -170,11 +276,14 @@ class OneBitLinear(nn.Module):
                 f"in_features ({in_features}) must be divisible by "
                 f"group_size ({group_size})"
             )
+        if scheme not in _SCHEME_CODES:
+            raise ValueError(f"unknown quantization scheme {scheme!r}")
         self.in_features = in_features
         self.out_features = out_features
         self.group_size = group_size
         self.num_groups = in_features // group_size
         self.int8_inference = int8_inference
+        self.scheme = scheme
 
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
         if bias:
@@ -188,6 +297,13 @@ class OneBitLinear(nn.Module):
         # unmarked quantised checkpoint would silently run the training path
         # over uninitialised master weights.
         self.register_buffer("quantized", torch.zeros((), dtype=torch.bool))
+        # Also persisted. The packed tensors for the two schemes have
+        # different shapes but nothing in them says which decoder to use, and
+        # decoding trits as bits yields a matrix that loads clean and is
+        # wrong everywhere.
+        self.register_buffer(
+            "scheme_code", torch.tensor(_SCHEME_CODES[scheme], dtype=torch.uint8)
+        )
         self.register_buffer("_int8_cache", None, persistent=False)
 
         self.reset_parameters()
@@ -204,18 +320,28 @@ class OneBitLinear(nn.Module):
 
     # -- forward paths ----------------------------------------------------
 
+    @property
+    def is_ternary(self) -> bool:
+        return self.scheme == "q1_58"
+
     def _forward_train(self, x: torch.Tensor) -> torch.Tensor:
-        w = fake_quantize(self.weight, self.group_size)
+        quantizer = ternary_fake_quantize if self.is_ternary else fake_quantize
+        w = quantizer(self.weight, self.group_size)
         bias = self.bias.float() if self.bias is not None else None
         return F.linear(x.float(), w, bias).to(x.dtype)
 
+    def _levels(self) -> torch.Tensor:
+        """Decoded {-1,0,+1} or {-1,+1}, before the group scale is applied."""
+        if self.is_ternary:
+            return unpack_trits(self.weight_bits, self.in_features)
+        return 2.0 * unpack_bits(self.weight_bits, self.in_features) - 1.0
+
     def dequantized_weight(self) -> torch.Tensor:
-        bits = unpack_bits(self.weight_bits, self.in_features)
-        signs = (2.0 * bits - 1.0).view(
+        levels = self._levels().view(
             self.out_features, self.num_groups, self.group_size
         )
         scales = self.weight_scales.float().unsqueeze(-1)
-        return (signs * scales).view(self.out_features, self.in_features)
+        return (levels * scales).view(self.out_features, self.in_features)
 
     def _forward_dequant(self, x: torch.Tensor) -> torch.Tensor:
         bias = self.bias.float() if self.bias is not None else None
@@ -223,8 +349,9 @@ class OneBitLinear(nn.Module):
 
     def _forward_int8(self, x: torch.Tensor) -> torch.Tensor:
         if self._int8_cache is None:
-            bits = unpack_bits(self.weight_bits, self.in_features)
-            self._int8_cache = (2 * bits - 1).to(torch.int8)
+            # {-1,0,+1} fits int8 exactly as {-1,+1} does, so the grouped
+            # GEMM needs no ternary special case.
+            self._int8_cache = self._levels().to(torch.int8)
         x_int8, x_scale = _quantize_activations(x)
         out = _grouped_int8_gemm(
             x_int8,
@@ -248,16 +375,29 @@ class OneBitLinear(nn.Module):
 
     @torch.no_grad()
     def quantize(self) -> None:
-        """Freeze master weights into packed bits + FP16 scales."""
+        """Freeze master weights into packed levels + FP16 scales.
+
+        The reduction has to match the scheme's training forward exactly. An
+        absmax here with ternary levels would freeze a matrix that is 85%
+        zeros while the training forward saw a balanced one -- the model
+        would train fine and collapse on export.
+        """
         if self.is_quantized:
             return
         w = self.weight.float().view(
             self.out_features, self.num_groups, self.group_size
         )
-        scales = w.abs().amax(dim=-1).clamp(min=1e-8)          # [out, groups]
-        signs = (w >= 0).view(self.out_features, self.in_features)
+        if self.is_ternary:
+            scales = w.abs().mean(dim=-1).clamp(min=1e-8)      # [out, groups]
+            levels = torch.clamp(
+                torch.round(w / scales.unsqueeze(-1)), -1.0, 1.0
+            ).view(self.out_features, self.in_features)
+            self.weight_bits = pack_trits(levels)
+        else:
+            scales = w.abs().amax(dim=-1).clamp(min=1e-8)
+            signs = (w >= 0).view(self.out_features, self.in_features)
+            self.weight_bits = pack_bits(signs)
 
-        self.weight_bits = pack_bits(signs)
         self.weight_scales = scales.to(torch.float16)
         self.quantized.fill_(True)
 
@@ -274,6 +414,21 @@ class OneBitLinear(nn.Module):
         unexpected_keys,
         error_msgs,
     ):
+        # Adopt the checkpoint's scheme before anything reads it. `scheme` is
+        # a plain attribute, so nothing else would restore it, and a ternary
+        # checkpoint loaded into a layer still calling itself binary decodes
+        # base-3 bytes as bit fields: it loads clean and every weight is
+        # wrong.
+        code = state_dict.get(prefix + "scheme_code")
+        if code is not None:
+            name = _SCHEME_NAMES.get(int(code.item()))
+            if name is None:
+                error_msgs.append(
+                    f"{prefix}scheme_code has unknown value {int(code.item())}"
+                )
+            else:
+                self.scheme = name
+
         # A quantised checkpoint has no `weight` and carries buffers whose
         # shapes differ from the freshly constructed placeholders.
         flag = state_dict.get(prefix + "quantized")
@@ -318,13 +473,14 @@ class OneBitLinear(nn.Module):
             mode = "int8" if self.int8_inference else "dequant"
         return (
             f"in_features={self.in_features}, out_features={self.out_features}, "
-            f"bias={self.bias is not None}, group_size={self.group_size}, mode={mode}"
+            f"bias={self.bias is not None}, group_size={self.group_size}, "
+            f"scheme={self.scheme}, mode={mode}"
         )
 
 
 def quantize_model_weights(model: nn.Module) -> nn.Module:
-    """Freeze every :class:`OneBitLinear` in ``model`` in place."""
+    """Freeze every :class:`LowBitLinear` in ``model`` in place."""
     for module in model.modules():
-        if isinstance(module, OneBitLinear):
+        if isinstance(module, LowBitLinear):
             module.quantize()
     return model

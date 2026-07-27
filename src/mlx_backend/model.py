@@ -21,7 +21,7 @@ import mlx.nn as nn
 
 from ..config import ModelConfig
 
-__all__ = ["MLXResABit", "fake_quantize"]
+__all__ = ["MLXResABit", "fake_quantize", "ternary_fake_quantize"]
 
 
 def fake_quantize(w: mx.array, group_size: int) -> mx.array:
@@ -42,17 +42,44 @@ def fake_quantize(w: mx.array, group_size: int) -> mx.array:
     return (quantized * scales).reshape(out_features, in_features)
 
 
-class OneBitLinear(nn.Module):
-    def __init__(self, in_features: int, out_features: int, bias: bool, group_size: int):
+def ternary_fake_quantize(w: mx.array, group_size: int) -> mx.array:
+    """Q1_58 round-trip with a straight-through gradient.
+
+    The scale is an absmean, not the absmax the binary path uses, so
+    ``w/scale`` exceeds 1 for above-average weights and the clip is doing
+    real work here -- unlike in :func:`fake_quantize`, where the argument is
+    inside [-1,1] by construction.
+    """
+    out_features, in_features = w.shape
+    g = w.reshape(out_features, in_features // group_size, group_size)
+    scales = mx.maximum(mx.abs(g).mean(axis=-1, keepdims=True), 1e-8)
+    normed = g / scales
+    levels = mx.clip(mx.round(normed), -1.0, 1.0)
+    quantized = normed + mx.stop_gradient(levels - normed)
+    return (quantized * scales).reshape(out_features, in_features)
+
+
+class LowBitLinear(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        bias: bool,
+        group_size: int,
+        scheme: str = "q1_0",
+    ):
         super().__init__()
         scale = (1.0 / in_features) ** 0.5
         self.weight = mx.random.uniform(-scale, scale, (out_features, in_features))
         if bias:
             self.bias = mx.zeros((out_features,))
         self.group_size = group_size
+        self.quantizer = (
+            ternary_fake_quantize if scheme == "q1_58" else fake_quantize
+        )
 
     def __call__(self, x: mx.array) -> mx.array:
-        y = x @ fake_quantize(self.weight, self.group_size).T
+        y = x @ self.quantizer(self.weight, self.group_size).T
         return y + self.bias if "bias" in self else y
 
 
@@ -71,7 +98,9 @@ class Linear(nn.Module):
 
 def _build_linear(cfg: ModelConfig, in_f: int, out_f: int, bias: bool):
     if cfg.quantize_linear:
-        return OneBitLinear(in_f, out_f, bias, cfg.quant_group_size)
+        return LowBitLinear(
+            in_f, out_f, bias, cfg.quant_group_size, cfg.quant_scheme
+        )
     return Linear(in_f, out_f, bias)
 
 

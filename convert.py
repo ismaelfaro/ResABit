@@ -18,17 +18,17 @@ import torch
 
 from src.config import ModelConfig
 from src.loader import HF_MODEL_ID, load_pretrained
-from src.quantization import OneBitLinear, quantize_model_weights
+from src.quantization import LowBitLinear, quantize_model_weights
 
 
 def checkpoint_bytes(model) -> int:
     total, seen = 0, set()
     for module in model.modules():
-        if isinstance(module, OneBitLinear):
+        if isinstance(module, LowBitLinear):
             total += module.storage_bytes()
             continue
         # recurse=False, so a parameter is attributed to the module that
-        # owns it and a OneBitLinear's tensors are never reached here. The
+        # owns it and a LowBitLinear's tensors are never reached here. The
         # id() set catches tied embeddings, which appear under two names.
         for param in module.parameters(recurse=False):
             if id(param) in seen:

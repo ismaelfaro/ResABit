@@ -52,7 +52,7 @@ from src.data import load_wikitext_tokens, make_training_windows
 from src.evaluate import evaluate_perplexity
 from src.loader import HF_MODEL_ID
 from src.mlx_backend.train import TrainConfig, mlx_to_torch_state, run_qat
-from src.quantization import OneBitLinear, quantize_model_weights
+from src.quantization import LowBitLinear, quantize_model_weights
 
 CHECKPOINT_DIR = Path("checkpoints")
 
@@ -98,7 +98,7 @@ def storage_report(model) -> dict:
     quantized_bytes = 0
     quantized_params = 0
     for module in model.modules():
-        if isinstance(module, OneBitLinear) and module.is_quantized:
+        if isinstance(module, LowBitLinear) and module.is_quantized:
             # Weights only. ``storage_bytes`` folds the bias in, and the bias
             # is still a live FP32 parameter -- counting it here and again
             # below would inflate the total and deflate the bits/weight.

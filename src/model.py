@@ -21,7 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import ModelConfig
-from .quantization import OneBitLinear
+from .quantization import LowBitLinear
 
 __all__ = ["ResABitForCausalLM", "RMSNorm", "build_linear"]
 
@@ -32,10 +32,14 @@ def build_linear(
     bias: bool,
     config: ModelConfig,
 ) -> nn.Module:
-    """A block projection: 1-bit when quantising, plain ``nn.Linear`` otherwise."""
+    """A block projection: sub-2-bit when quantising, plain ``nn.Linear`` otherwise."""
     if config.quantize_linear:
-        return OneBitLinear(
-            in_features, out_features, bias=bias, group_size=config.quant_group_size
+        return LowBitLinear(
+            in_features,
+            out_features,
+            bias=bias,
+            group_size=config.quant_group_size,
+            scheme=config.quant_scheme,
         )
     return nn.Linear(in_features, out_features, bias=bias)
 
@@ -376,8 +380,8 @@ class ResABitForCausalLM(nn.Module):
 
     # -- utilities --------------------------------------------------------
 
-    def quantized_modules(self) -> list[OneBitLinear]:
-        return [m for m in self.modules() if isinstance(m, OneBitLinear)]
+    def quantized_modules(self) -> list[LowBitLinear]:
+        return [m for m in self.modules() if isinstance(m, LowBitLinear)]
 
     def alpha_values(self) -> list[float]:
         """Effective per-layer gates, with ``ALPHA_GAIN`` folded back in."""

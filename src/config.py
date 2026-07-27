@@ -41,9 +41,14 @@ class ModelConfig:
     bos_token_id: int = 151643
     eos_token_id: int = 151645
 
-    # -- Q1_0_g128 quantization ------------------------------------------
+    # -- Sub-2-bit quantization -------------------------------------------
     quantize_linear: bool = True
     quant_group_size: int = 128
+    # ``q1_0``  -- one sign bit, absmax group scale, 1.125 bits/weight
+    # ``q1_58`` -- {-1,0,+1}, absmean group scale, 1.725 bits/weight
+    # The scale statistic is part of the scheme, not a tunable: absmax with
+    # ternary levels rounds 85% of a Gaussian matrix to zero.
+    quant_scheme: str = "q1_0"
 
     # -- Attention residuals ---------------------------------------------
     use_attention_residuals: bool = False
@@ -68,6 +73,8 @@ class ModelConfig:
     mask_token_id: int = 151646
 
     def __post_init__(self) -> None:
+        if self.quant_scheme not in ("q1_0", "q1_58"):
+            raise ValueError(f"unknown quant_scheme {self.quant_scheme!r}")
         if self.diffusion and not 0 <= self.mask_token_id < self.vocab_size:
             raise ValueError(
                 f"mask_token_id {self.mask_token_id} is outside the embedding "
@@ -112,8 +119,10 @@ class ModelConfig:
 
     @property
     def bits_per_quantized_weight(self) -> float:
-        """1 sign bit + one FP16 scale amortised over the group."""
-        return 1.0 + 16.0 / self.quant_group_size
+        """Scheme's payload plus one FP16 scale amortised over the group."""
+        from .quantization import bits_per_weight
+
+        return bits_per_weight(self.quant_scheme, self.quant_group_size)
 
     @property
     def effective_bits_per_weight(self) -> float:
