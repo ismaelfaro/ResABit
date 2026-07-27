@@ -118,6 +118,10 @@ class Attention(nn.Module):
         self.rotary = RotaryEmbedding(
             self.head_dim, config.max_position_embeddings, config.rope_theta
         )
+        # A denoiser has to see the whole corrupted sequence, including
+        # positions after the one it is filling in. This flag is the entire
+        # architectural difference between the two regimes.
+        self.causal = not config.diffusion
 
     def forward(
         self,
@@ -146,7 +150,7 @@ class Attention(nn.Module):
 
         # A single new token attends to the whole cache, so the causal mask
         # only applies when we are processing more than one position.
-        out = F.scaled_dot_product_attention(q, k, v, is_causal=T > 1)
+        out = F.scaled_dot_product_attention(q, k, v, is_causal=self.causal and T > 1)
         out = out.transpose(1, 2).reshape(B, T, self.num_heads * self.head_dim)
         return self.o_proj(out), present
 
@@ -282,6 +286,93 @@ class ResABitForCausalLM(nn.Module):
             "logits": logits,
             "past_key_values": present if use_cache else None,
         }
+
+    # -- diffusion --------------------------------------------------------
+
+    def diffusion_loss(
+        self,
+        input_ids: torch.Tensor,
+        rates: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """NELBO estimator on a pre-corrupted batch.
+
+        Corruption is passed in, never drawn here: the MLX twin has to be
+        given the identical mask for the parity test to compare numbers
+        instead of distributions, and paired seeds need both arms to see the
+        same corruption.
+        """
+        if not self.config.diffusion:
+            raise RuntimeError(
+                "diffusion_loss on a causal model would score a denoising "
+                "objective through a mask that hides half the sequence"
+            )
+        from .diffusion import diffusion_loss as _loss
+
+        corrupted = torch.where(
+            mask, torch.full_like(input_ids, self.config.mask_token_id), input_ids
+        )
+        logits = self.forward(corrupted)["logits"]
+        return _loss(logits, input_ids, mask, rates)
+
+    @torch.no_grad()
+    def diffusion_generate(
+        self,
+        input_ids: torch.Tensor,
+        num_steps: int = 32,
+        temperature: float = 0.0,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        """Iterative denoising with low-confidence remasking.
+
+        Every position that is ``[MASK]`` on entry is a slot to fill. Each
+        pass predicts all of them, keeps the most confident ``1/remaining``
+        share, and leaves the rest masked for the next pass. At
+        ``num_steps=1`` this degenerates to filling everything at once, which
+        is the independent-marginals baseline worth comparing against.
+        """
+        if not self.config.diffusion:
+            raise RuntimeError("diffusion_generate needs a bidirectional model")
+        self.eval()
+
+        tokens = input_ids.clone()
+        pending = tokens == self.config.mask_token_id
+        if not bool(pending.any()):
+            return tokens
+
+        for step in range(num_steps):
+            logits = self.forward(tokens)["logits"].float()
+            # [MASK] is a corruption symbol, not vocabulary. A model that has
+            # not converged will happily predict it, and the sampler would
+            # then mark the slot filled while leaving a mask token in the
+            # output -- filled and still masked at the same time.
+            logits[..., self.config.mask_token_id] = float("-inf")
+            if temperature > 0:
+                probs = (logits / temperature).softmax(-1)
+                flat = probs.view(-1, probs.shape[-1])
+                drawn = torch.multinomial(flat, 1, generator=generator)
+                predicted = drawn.view(tokens.shape)
+                confidence = probs.gather(-1, predicted.unsqueeze(-1)).squeeze(-1)
+            else:
+                confidence, predicted = logits.softmax(-1).max(dim=-1)
+
+            # Reveal a fixed fraction of what is still masked, so the last
+            # step always finishes the sequence.
+            remaining = num_steps - step
+            for b in range(tokens.shape[0]):
+                slots = pending[b].nonzero(as_tuple=True)[0]
+                if slots.numel() == 0:
+                    continue
+                take = max(1, round(slots.numel() / remaining))
+                order = confidence[b, slots].argsort(descending=True)[:take]
+                chosen = slots[order]
+                tokens[b, chosen] = predicted[b, chosen]
+                pending[b, chosen] = False
+
+            if not bool(pending.any()):
+                break
+
+        return tokens
 
     # -- utilities --------------------------------------------------------
 

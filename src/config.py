@@ -51,7 +51,28 @@ class ModelConfig:
     # arm is numerically identical to its no-AR twin at step 0.
     attn_residual_init: float = 0.0
 
+    # -- Discrete diffusion -----------------------------------------------
+    # Absorbing-state masked diffusion, LLaDA's formulation: corrupt by
+    # replacing tokens with [MASK] at a sampled rate, predict the originals,
+    # generate by unmasking iteratively. Turning this on makes attention
+    # bidirectional, which is the whole point -- a denoiser sees the entire
+    # sequence, including the tokens after the one it is filling in.
+    diffusion: bool = False
+    # Qwen1.5 ships 151936 embedding rows for a tokenizer that only reaches
+    # 151646, so rows 151646..151935 exist, are never emitted, and carry
+    # pretrained-but-unused vectors. Taking one for [MASK] avoids resizing
+    # the embedding, avoids breaking the tie to the readout, and keeps the
+    # HuggingFace parity test meaningful. It is not free: the row is not a
+    # trained mask representation, it is whatever initialisation Qwen left
+    # there, so the adaptation has to learn it from scratch.
+    mask_token_id: int = 151646
+
     def __post_init__(self) -> None:
+        if self.diffusion and not 0 <= self.mask_token_id < self.vocab_size:
+            raise ValueError(
+                f"mask_token_id {self.mask_token_id} is outside the embedding "
+                f"table (vocab_size {self.vocab_size})"
+            )
         if self.hidden_size % self.num_attention_heads:
             raise ValueError("hidden_size must be divisible by num_attention_heads")
         if self.num_attention_heads % self.num_key_value_heads:

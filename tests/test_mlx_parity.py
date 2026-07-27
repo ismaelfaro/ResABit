@@ -129,3 +129,136 @@ def test_only_three_weight_levels_per_group():
             group = q[row, g * 128 : (g + 1) * 128]
             assert group.abs().unique().numel() == 1
             assert group.unique().numel() <= 2
+
+
+def test_diffusion_backends_agree_on_cpu(hf_state):
+    """The bidirectional path has to be pinned too, not just the causal one.
+
+    Dropping the causal mask is a one-line change in each backend, made
+    twice, in files that do not import each other. If only one of them takes
+    effect the model still trains and still reports a falling loss -- it is
+    just answering a different question in each framework.
+    """
+    delta = _relative_delta(
+        ModelConfig(quantize_linear=False, use_attention_residuals=False,
+                    diffusion=True),
+        hf_state,
+        mx.cpu,
+    )
+    assert delta < 1e-5, f"relative delta = {delta:.2e}"
+
+
+def test_diffusion_and_causal_are_actually_different(hf_state):
+    """Guard against `diffusion=True` silently doing nothing.
+
+    Both parity tests above pass if the flag is ignored in both backends at
+    once, because the two would agree with each other while agreeing about
+    the wrong architecture.
+    """
+    from src.loader import load_pretrained
+
+    ids = torch.tensor(_IDS)
+    outputs = {}
+    for flag in (False, True):
+        model = load_pretrained(
+            ModelConfig(quantize_linear=False, use_attention_residuals=False,
+                        diffusion=flag),
+            hf_state=hf_state,
+            verbose=False,
+        ).eval()
+        with torch.no_grad():
+            outputs[flag] = model(input_ids=ids)["logits"].numpy()
+        del model
+
+    # The first position is the sharpest probe: under a causal mask it sees
+    # only itself, under a bidirectional one it sees the whole sequence.
+    first = np.abs(outputs[False][0, 0] - outputs[True][0, 0]).max()
+    assert first > 1e-3, f"causal and diffusion agree at position 0: {first:.2e}"
+
+
+def test_diffusion_loss_agrees_across_backends(hf_state):
+    """Same corruption in, same NELBO out.
+
+    The corruption is built here and handed to both backends precisely so
+    this test compares numbers rather than distributions.
+    """
+    from src.diffusion import corrupt, sample_rates
+    from src.mlx_backend import load_mlx_pretrained
+
+    config = ModelConfig(quantize_linear=False, use_attention_residuals=False,
+                         diffusion=True)
+    ids = torch.tensor(_IDS)
+    generator = torch.Generator().manual_seed(0)
+    rates = sample_rates(ids.shape[0], generator=generator)
+    _, mask = corrupt(ids, rates, config.mask_token_id, generator=generator)
+
+    torch_model = load_pretrained(config, hf_state=hf_state, verbose=False).eval()
+    with torch.no_grad():
+        expected = float(torch_model.diffusion_loss(ids, rates, mask))
+    del torch_model
+
+    mlx_model = load_mlx_pretrained(config, hf_state=hf_state)
+    with mx.stream(mx.cpu):
+        actual = float(
+            mlx_model.diffusion_loss(
+                mx.array(ids.numpy()),
+                mx.array(rates.numpy()),
+                mx.array(mask.numpy()),
+            )
+        )
+
+    # 1e-3, not the 1e-5 the clean-input logits get, and the looseness is
+    # measured rather than assumed. Feeding MLX's logits through PyTorch's own
+    # loss reproduces MLX's number to 2e-6, so the two loss definitions agree
+    # exactly and the whole gap is in the forward pass on a corrupted input.
+    # See test_corruption_conditions_the_forward_pass for why that input is
+    # harder than a clean one.
+    assert abs(actual - expected) / expected < 1e-3, f"{actual} vs {expected}"
+
+
+def test_corruption_conditions_the_forward_pass(hf_state):
+    """Cross-backend disagreement depends on how much of the input is masked.
+
+    Measured on an M5, CPU, 12 tokens, one sequence::
+
+         0/12 masked   5.9e-06
+         4/12 masked   1.7e-05
+         8/12 masked   3.4e-05
+        10/12 masked   5.9e-04
+        12/12 masked   5.1e-06
+
+    Not monotonic, and the shape is the explanation: a fully masked sequence
+    is clean again because every position holds the same token, so there are
+    no near-ties for a one-ulp difference to break. The excursions live in
+    mixed sequences.
+
+    This matters for the two-backend split. On the causal path the margin
+    between backend noise (~1e-5) and binarization damage (~1e-2) is three
+    orders of magnitude. Here a bad corruption pattern closes it to about
+    one and a half. Training on MLX and measuring in PyTorch is still sound,
+    with less room than the autoregressive side had.
+    """
+    config = ModelConfig(quantize_linear=False, use_attention_residuals=False,
+                         diffusion=True)
+    torch_model = load_pretrained(config, hf_state=hf_state, verbose=False).eval()
+    mlx_model = load_mlx_pretrained(config, hf_state=hf_state)
+
+    deltas = {}
+    generator = torch.Generator().manual_seed(0)
+    for k in (0, 8, 12):
+        ids = torch.tensor(_IDS)
+        if k:
+            ids[0, torch.randperm(len(_IDS[0]), generator=generator)[:k]] = (
+                config.mask_token_id
+            )
+        with torch.no_grad():
+            expected = torch_model(input_ids=ids)["logits"].numpy()
+        with mx.stream(mx.cpu):
+            actual = np.array(mlx_model(mx.array(ids.numpy())))
+        deltas[k] = float(np.abs(actual - expected).max() / np.abs(expected).max())
+
+    assert deltas[0] < 1e-5, f"clean input should be tight: {deltas[0]:.2e}"
+    assert deltas[12] < 1e-4, f"fully masked should be tight: {deltas[12]:.2e}"
+    # The headroom that licenses training on one backend and measuring on the
+    # other. Binarization moves the logits by ~1e-2.
+    assert max(deltas.values()) < 1e-3, f"corrupted forward drifted: {deltas}"

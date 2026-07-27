@@ -12,16 +12,24 @@ run on a single Apple Silicon machine, combining:
   sum of all prior attention outputs and re-injects it through a learnable
   per-layer gate.
 
+> **This is prior work, not the goal.** The project's thesis is sub-2-bit
+> weights for a **discrete diffusion** language model — ternary, on a model
+> that generates by iterative denoising. The autoregressive 1-bit ablation
+> below is what validates the quantizer and the measurement discipline that
+> work will inherit. See [docs/ROADMAP.md](docs/ROADMAP.md) for the gap
+> between the two and the order of work.
+
 **Answer: no measurable interaction.** The residual does not preferentially
 repair binarization damage; the gates converge *negative*, and they do so in
 FP32 too. Binarizing 308M of 464M parameters costs 2.97 nats — a 19.5x
 perplexity increase — at this recovery budget.
 
-Status: **2x2 complete**, 15 runs in `results/ledger.jsonl`, five paired
-seeds on the contested pair. Every number below is generated from that ledger
-by `report.py` and traces to a row carrying its arm, seed and git commit.
-Open items are listed as TODOs in [docs/PROTOCOL.md](docs/PROTOCOL.md) §8
-rather than left implied.
+Status: **2x2 complete and frozen, unpublished.** 15 runs in
+`results/ledger.jsonl`, five paired seeds on the contested pair. Checkpoints
+and cards exist locally and are not being uploaded. Every number below is
+generated from that ledger by `report.py` and traces to a row carrying its
+arm, seed and git commit. Open items are listed as TODOs in
+[docs/PROTOCOL.md](docs/PROTOCOL.md) §8 rather than left implied.
 
 ---
 

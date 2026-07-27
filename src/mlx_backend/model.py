@@ -98,6 +98,7 @@ class Attention(nn.Module):
         self.head_dim = cfg.head_dim
         self.scale = self.head_dim**-0.5
 
+        self.causal = not cfg.diffusion
         q_out = self.n_heads * self.head_dim
         kv_out = self.n_kv * self.head_dim
         self.q_proj = _build_linear(cfg, cfg.hidden_size, q_out, cfg.attention_bias)
@@ -194,7 +195,9 @@ class MLXResABit(nn.Module):
         _, T = input_ids.shape
         x = self.embed_tokens(input_ids)
         cos, sin = self._rope(T)
-        mask = "causal" if T > 1 else None
+        # None means every position attends everywhere, which is what a
+        # denoiser needs and what a causal LM must never get.
+        mask = "causal" if (not self.cfg.diffusion and T > 1) else None
 
         acc = None
         for layer in self.layers:
@@ -213,6 +216,28 @@ class MLXResABit(nn.Module):
         )
         losses = losses * valid.reshape(-1)
         return losses.sum() / mx.maximum(valid.sum(), 1)
+
+    def diffusion_loss(
+        self, input_ids: mx.array, rates: mx.array, mask: mx.array
+    ) -> mx.array:
+        """The 1/t-weighted NELBO estimator; see ``src/diffusion.py``.
+
+        Same shape of contract as the PyTorch twin: corruption arrives as an
+        argument. Two backends cannot agree on a random draw, and the parity
+        test needs them scoring the identical corruption.
+        """
+        B, L = input_ids.shape
+        corrupted = mx.where(mask, self.cfg.mask_token_id, input_ids)
+        logits = self(corrupted).astype(mx.float32)
+
+        per_token = nn.losses.cross_entropy(
+            logits.reshape(-1, logits.shape[-1]),
+            input_ids.reshape(-1),
+            reduction="none",
+        ).reshape(B, L)
+
+        masked_sum = (per_token * mask.astype(mx.float32)).sum(axis=1)
+        return (masked_sum / (rates.reshape(B) * L)).mean()
 
     def alpha_values(self) -> list[float]:
         """Effective per-layer gates, with ``ALPHA_GAIN`` folded back in."""
