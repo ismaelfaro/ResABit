@@ -38,6 +38,7 @@ import argparse
 import json
 import platform
 import subprocess
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -160,6 +161,12 @@ def main() -> None:
     p.add_argument("--skip-ledger-check", action="store_true",
                    help="export even if the rebuild misses the published number")
     args = p.parse_args()
+
+    # A 30-minute run whose progress lands only when it exits is a run you
+    # cannot watch. Python block-buffers stdout the moment it is redirected
+    # to a file, and the whole training log is under 3 KB, so it never fills
+    # the buffer and never flushes early.
+    sys.stdout.reconfigure(line_buffering=True)
 
     arm = ARMS[args.arm]
     out_dir = Path(args.out) if args.out else CHECKPOINT_DIR / f"resabit-{args.arm}-seed{args.seed}"

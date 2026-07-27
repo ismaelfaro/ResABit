@@ -30,6 +30,7 @@ import argparse
 import json
 import platform
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -285,6 +286,12 @@ def main() -> None:
     p.add_argument("--resume", action="store_true",
                    help="skip (arm, seed) pairs already recorded in the ledger")
     args = p.parse_args()
+
+    # Sweeps run for hours behind a redirect, and Python block-buffers stdout
+    # as soon as it is not a terminal. The per-step log is small enough never
+    # to fill that buffer, so without this the sweep log is empty until a run
+    # ends -- which is exactly when you no longer need it.
+    sys.stdout.reconfigure(line_buffering=True)
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     train_cfg = TrainConfig(

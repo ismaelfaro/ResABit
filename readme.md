@@ -212,6 +212,17 @@ Score a checkpoint on the held-out suite without retraining:
 python eval_checkpoint.py checkpoints/resabit-onebit-seed0
 ```
 
+Watch a run in flight — step progress, loss curve, ETA, and the frozen-path
+numbers as each arm lands:
+
+```bash
+python dashboard.py --watch
+```
+
+It reads the log rather than instrumenting the runs, and labels anything it
+infers rather than presenting it as measured. If a run's log has gone silent
+it says so instead of extrapolating a healthy-looking bar.
+
 ### Publishing one
 
 The card is generated from the checkpoint's own manifest, for the same reason
@@ -261,6 +272,7 @@ export_checkpoint.py   Retrain one arm -> frozen, publishable checkpoint
 eval_checkpoint.py     Score a checkpoint without retraining it
 make_model_card.py     Checkpoint manifest -> model card
 upload_to_hf.py        Preflight + push to the Hub (dry run by default)
+dashboard.py           Live progress view over the run log
 convert.py             HF weights -> frozen 1-bit checkpoint
 inference.py           Generation from a checkpoint
 tests/                 Parity against HuggingFace and across backends
