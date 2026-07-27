@@ -137,8 +137,24 @@ def parse(log: Path) -> list[Arm]:
     return arms
 
 
-def live_processes() -> list[dict]:
-    """Running exports, with elapsed and CPU time straight from ps."""
+def _cpu_seconds(cputime: str) -> float:
+    """ps CPU time: [hh:]mm:ss[.ff]."""
+    parts = cputime.split(":")
+    total = 0.0
+    for part in parts:
+        total = total * 60 + float(part)
+    return total
+
+
+def live_processes(sample_seconds: float = 0.0) -> list[dict]:
+    """Running exports, with elapsed and CPU time straight from ps.
+
+    With ``sample_seconds``, read the CPU clock twice. Elapsed time alone
+    cannot tell a slow run from a wedged one, and on this machine that is not
+    hypothetical: MLX and PyTorch draw on the same unified memory and neither
+    sees the other's allocations, so a second job started alongside a sweep
+    can leave the first alive, resident, and making no progress at all.
+    """
     out = subprocess.run(
         ["ps", "-Ao", "pid=,etime=,time=,rss=,command="],
         capture_output=True, text=True, check=False,
@@ -157,13 +173,32 @@ def live_processes() -> list[dict]:
             "pid": pid,
             "etime": etime,
             "cpu_time": cputime,
+            "cpu_seconds": _cpu_seconds(cputime),
             "rss_mb": int(rss) / 1024,
+            "cpu_rate": None,
             "arm": next(
                 (t for t in command.split() if t in
                  ("onebit", "onebit_ar", "fp32", "fp32_ar")),
                 "?",
             ),
         })
+
+    if sample_seconds and found:
+        time.sleep(sample_seconds)
+        again = subprocess.run(
+            ["ps", "-o", "pid=,time=", "-p", ",".join(p["pid"] for p in found)],
+            capture_output=True, text=True, check=False,
+        )
+        later = {}
+        for line in again.stdout.splitlines():
+            bits = line.split()
+            if len(bits) == 2:
+                later[bits[0]] = _cpu_seconds(bits[1])
+        for proc in found:
+            if proc["pid"] in later:
+                delta = later[proc["pid"]] - proc["cpu_seconds"]
+                proc["cpu_rate"] = delta / sample_seconds
+
     return found
 
 
@@ -222,9 +257,9 @@ def checkpoint_rows() -> list[str]:
     return rows
 
 
-def render(log: Path) -> str:
+def render(log: Path, sample_seconds: float = 0.0) -> str:
     arms = parse(log)
-    running = live_processes()
+    running = live_processes(sample_seconds)
     by_arm = {p["arm"]: p for p in running}
 
     lines = [
@@ -286,13 +321,21 @@ def render(log: Path) -> str:
                 # inching a bar toward 100%: the arm has moved into the two
                 # perplexity evaluations, which this log cannot see either.
                 lines.append(
-                    f"    [{bar(1, 1)}] training phase complete by elapsed time "
-                    f"({mmss(elapsed)} vs {mmss(reference)})"
+                    f"    [{bar(1, 1)}] past the training duration of a finished "
+                    f"arm ({mmss(elapsed)} vs {mmss(reference)})"
                 )
-                lines.append(
-                    f"    now in evaluation, ~{mmss(elapsed - reference)} in "
-                    "(two perplexity passes, then the write)"
-                )
+                if elapsed > 2 * reference:
+                    # Elapsed time alone cannot separate "slow" from "wedged",
+                    # and reading a silent log as either is guesswork. Say
+                    # which one the CPU clock supports.
+                    lines.append(
+                        "    WELL OVER BUDGET — check the CPU rate below before "
+                        "concluding anything;"
+                    )
+                    lines.append(
+                        "    elapsed time cannot tell a swap-bound run from a "
+                        "wedged one."
+                    )
             else:
                 lines.append(
                     f"    [{bar(elapsed, reference)}] "
@@ -331,6 +374,31 @@ def render(log: Path) -> str:
                 f"    pid {proc['pid']}  elapsed {proc['etime']}  "
                 f"cpu {proc['cpu_time']}  rss {proc['rss_mb']:.0f} MB"
             )
+            # Two rates, because they disagree and the disagreement is the
+            # diagnosis. A run starved for memory runs in bursts: sample it
+            # during a burst and the instantaneous rate looks healthy while
+            # the lifetime average says it has done a tenth of the work.
+            # Reporting only the instantaneous figure once read "normal" for
+            # an arm running at a tenth speed.
+            lifetime = proc["cpu_seconds"] / max(_etime_seconds(proc["etime"]), 1)
+            lines.append(f"    cpu, lifetime average {lifetime*100:.1f}%")
+            rate = proc.get("cpu_rate")
+            if rate is not None:
+                lines.append(f"    cpu, sampled just now {rate*100:.1f}%")
+
+            # These runs are GPU-bound; a healthy arm averages roughly 10%.
+            if rate is not None and rate < 0.005 and lifetime < 0.02:
+                verdict = "STALLED — the CPU clock is not advancing"
+            elif reference and lifetime < 0.04:
+                verdict = (
+                    "STARVED — running at a fraction of the rate a finished arm "
+                    "managed; check memory pressure, and consider killing and "
+                    "rerunning alone (the pipeline is deterministic, so nothing "
+                    "is lost)"
+                )
+            else:
+                verdict = "healthy for a GPU-bound arm"
+            lines.append(f"    verdict {verdict}")
         lines.append("")
 
     rows = checkpoint_rows()
@@ -347,16 +415,18 @@ def main() -> None:
     p.add_argument("--log", default=str(DEFAULT_LOG))
     p.add_argument("--watch", action="store_true", help="refresh until interrupted")
     p.add_argument("--interval", type=float, default=10.0)
+    p.add_argument("--sample", type=float, default=3.0,
+                   help="seconds to sample the CPU clock over (0 to skip)")
     args = p.parse_args()
 
     log = Path(args.log)
     if not args.watch:
-        print(render(log))
+        print(render(log, args.sample))
         return
 
     try:
         while True:
-            print("\033[2J\033[H" + render(log), flush=True)
+            print("\033[2J\033[H" + render(log, args.sample), flush=True)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("stopped")
