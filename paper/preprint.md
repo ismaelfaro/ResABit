@@ -1,4 +1,4 @@
-# Sub-2-bit weights for a discrete diffusion language model: protocol, prior measurements, and a factorial in progress
+# Sub-2-bit weights for a discrete diffusion language model: a factorial measurement at 0.5B
 
 **Draft preprint. Every number is generated from a ledger
 (`results/ledger.jsonl`, `results/diffusion_ledger.jsonl`,
@@ -28,11 +28,20 @@ stay in the ledger.
 Measured so far, on Qwen1.5-0.5B-Chat at a 1.23M-token budget: the
 diffusion adaptation clears its floor by 8.06 nats (NELBO 10.539 → 3.876,
 mask accuracy 0.008 → 0.275), so quantization damage is measurable on top of
-it; ternary with an absmax scale silently zeroes 85% of a Gaussian matrix,
-which is why the scale statistic travels with the scheme; and at the first
-seed, ternary costs the diffusion model 26.1% of its headroom against 15.2%
-on the autoregressive side — an interaction of +0.108 in headroom share,
-carrying no error bar until the remaining seeds land (`[PENDING]`).
+it; and ternary with an absmax scale silently zeroes 85% of a Gaussian
+matrix, which is why the scale statistic travels with the scheme.
+
+The factorial is complete at three paired seeds, and it resolves: **ternary
+quantization costs the diffusion model 25.7% of its headroom against 14.6%
+for the autoregressive model — an interaction of +0.111 in headroom share,
+56x its paired standard error, sign stable across every seed.** The same
+protocol that returned a null 1.2x its SE in Part I returns this at 56x,
+which is the strongest available evidence the effect is real rather than
+pipeline artifact. At this scale and budget, the masked-diffusion objective
+is measurably more fragile under sub-2-bit weights than next-token
+prediction — the opposite ordering from the literature's one comparative
+PTQ datapoint at 2–4 bits, which makes the regime boundary the next
+question.
 
 This work sits on a completed prior measurement: a 2x2 crossing {FP32, 1-bit}
 with a cross-layer attention residual on the autoregressive model (§Part I),
@@ -533,29 +542,67 @@ shared floor, and the **fraction of headroom destroyed by quantization** is
 dimensionless and commensurable across regimes. Raw nats are recorded per
 cell for anyone who rejects the normalisation.
 
-Status at this draft — seed 0 complete, seeds 1 and 2 `[PENDING]`:
+### 8.1 Result
+
+Three paired seeds, all cells complete. Means with seed-to-seed sd:
 
 | cell | metric | loss (nats) | headroom |
 |---|---|---|---|
-| fp32_diff | NELBO | 3.8761 | +8.0551 |
-| ternary_diff | NELBO | 5.9758 | +5.9554 |
-| fp32_ar | NLL | 2.6846 | +9.2466 |
-| ternary_ar | NLL | 4.0927 | +7.8385 |
+| fp32_diff | NELBO | 3.8702 | +8.0610 |
+| ternary_diff | NELBO | 5.9408 | +5.9904 |
+| fp32_ar | NLL | 2.6909 | +9.2403 |
+| ternary_ar | NLL | 4.0350 | +7.8962 |
 
-At seed 0, ternary costs the diffusion model 2.100 nats of NELBO — 26.1% of
-its headroom — against 1.408 nats of NLL, 15.2% of headroom, on the
-autoregressive side: an interaction of **+0.108** in headroom share, ternary
-hurting diffusion more. **One seed carries no error bar and no verdict**;
-Part I's per-seed deltas changed sign three times across five seeds, and
-this number is reported now only so that its later movement is itself on the
-record. Two supporting observations at the same seed: `fp32_ar` reproduced
-Part I's fine-tuned FP32 NLL to the digit (2.6846) from a different script,
-and QAT recovered the ternary diffusion cell from below the uniform floor
-(smoke headroom −1.14) to +5.96.
+Ternary cost, as the share of headroom destroyed:
 
-Ternary against Part I's binary, same architecture, same budget, seed 0:
-NLL 4.093 versus 5.655. The 0.6 extra bits per weight buy back 1.56 nats of
-the binarization gap.
+| | per-seed shares | mean | sd |
+|---|---|---|---|
+| diffusion | 0.2607, 0.2558, 0.2541 | **0.2569** | 0.0034 |
+| autoregressive | 0.1523, 0.1405, 0.1436 | **0.1455** | 0.0061 |
+
+Per-seed paired interaction: +0.1084, +0.1153, +0.1105 — the sign never
+moves. Mean **+0.1114**, paired SE **0.0020**: 56x the standard error,
+against the same 2 SE rule Part I's null sat inside.
+
+**Ternary quantization costs the diffusion model a 1.77x larger share of its
+headroom than it costs the autoregressive model, at matched budget, matched
+data order, and paired seeds.** In raw nats (not commensurable across the
+two metrics, reported for the ledger's sake): +2.071 NELBO on diffusion
+against +1.344 NLL autoregressive.
+
+Part I's null and this result were produced by the same protocol, which is
+worth a sentence: the instrument distinguishes an effect it cannot detect
+(−0.021 nats, 1.2x its SE) from one it can (+0.111, 56x). The contrast is
+the strongest available evidence that the effect here is real rather than
+an artifact of the pipeline.
+
+Supporting observations. `fp32_ar` reproduced Part I's fine-tuned FP32 NLL
+to the digit (2.6846 at seed 0) from a different script. QAT recovered the
+ternary diffusion cell from below the uniform floor (smoke headroom −1.14)
+to +5.99 — post-training ternary destroys the diffusion model outright and
+recovery is what the budget buys. And ternary against Part I's binary at the
+same architecture and budget is NLL 4.035 versus 5.655: the 0.6 extra
+stored bits per weight buy back 1.62 nats of the quantization gap.
+
+### 8.2 What the result does and does not say
+
+It says: at 0.5B and 1.23M recovery tokens, the masked-diffusion objective
+loses proportionally more of what it had than next-token prediction does,
+under identical ternary weights. Candidate mechanisms — the denoiser's
+bidirectional attention reuses every projection under a wider input
+distribution (clean and masked tokens mixed); the `1/t`-weighted objective
+concentrates gradient on heavily corrupted batches; the AR-pretrained
+initialisation is simply further from a good diffusion solution so the same
+damage is harder to route around — are not separated by this design, and we
+decline to pick one post hoc.
+
+It does not say diffusion models cannot be quantized (26% of headroom lost
+is damaged, not floored), does not compare diffusion quality to
+autoregressive quality, and does not automatically survive scale — Part I's
+§6 caveat about 0.5B applies with full force. The one comparative PTQ
+datapoint in the literature (arXiv:2604.20079, 2–4 bits) found diffusion
+*more* robust; at 1.725 bits with QAT we find the opposite ordering, and
+reconciling the two regimes is the obvious next measurement.
 
 One shape observation from the 2-step smoke run, reported as shape and
 nothing more: before any meaningful recovery, ternary put the diffusion model
@@ -612,8 +659,11 @@ Shared by both parts:
 
 Specific to Part II:
 
-- **The grid is incomplete.** Four cells at one seed. Nothing in §8
-  beyond the gating check and the smoke-run shape is a result yet.
+- **Three seeds.** Enough for a sign-stable effect 56x its SE; not enough
+  for a tight interval on the magnitude, and Part I is the standing reminder
+  of what fewer seeds are worth.
+- **The candidate mechanisms are not separated** (§8.2). The design
+  identifies *that* the diffusion objective loses more, not *why*.
 - **The headroom-share normalisation is a modelling choice.** It is the only
   quantity offered as commensurable across architectures, the raw nats are
   ledgered so it can be recomputed differently, and a reader who rejects it

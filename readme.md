@@ -12,12 +12,17 @@ run on a single Apple Silicon machine, combining:
   sum of all prior attention outputs and re-injects it through a learnable
   per-layer gate.
 
-> **This is prior work, not the goal.** The project's thesis is sub-2-bit
-> weights for a **discrete diffusion** language model — ternary, on a model
-> that generates by iterative denoising. The autoregressive 1-bit ablation
-> below is what validates the quantizer and the measurement discipline that
-> work will inherit. See [docs/ROADMAP.md](docs/ROADMAP.md) for the gap
-> between the two and the order of work.
+> **The thesis question is answered — see
+> [paper/preprint.md](paper/preprint.md) Part II.** Sub-2-bit (ternary,
+> 1.725 bits stored) weights on a masked discrete diffusion model, run as a
+> factorial against the same quantization on the autoregressive twin:
+> **ternary costs the diffusion model 25.7% of its headroom against 14.6%
+> autoregressive — interaction +0.111 in headroom share, 56x its paired SE,
+> sign stable across three paired seeds.** At this scale and budget the
+> diffusion objective is measurably more fragile under sub-2-bit weights.
+> The autoregressive 1-bit ablation below is the prior measurement that
+> validates the instruments; [docs/ROADMAP.md](docs/ROADMAP.md) has the
+> project map.
 
 **Answer: no measurable interaction.** The residual does not preferentially
 repair binarization damage; the gates converge *negative*, and they do so in

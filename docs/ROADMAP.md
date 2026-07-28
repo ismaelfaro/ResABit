@@ -113,8 +113,15 @@ HuggingFace.
    survive a checkpoint round trip (`scheme` is a plain attribute, so a
    ternary checkpoint loaded into a binary layer decodes base-3 bytes as bit
    fields — it loads clean and every weight is wrong).
-3. **The grid.** {FP32, ternary} x {autoregressive, diffusion} at matched
-   budget, paired seeds, measured noise floor.
+3. **The grid — complete, three paired seeds, and it resolves.** Ternary
+   costs the diffusion model **25.7%** of its headroom below the uniform
+   floor against **14.6%** for the autoregressive model: an interaction of
+   **+0.111 in headroom share, 56x its paired SE**, sign stable across every
+   seed (per-seed +0.108, +0.115, +0.111). The same protocol that returned
+   Part I's null at 1.2x SE returns this at 56x. Raw nats: +2.071 NELBO on
+   diffusion, +1.344 NLL autoregressive — not commensurable, ledgered.
+   Full table and the mechanisms the design does not separate:
+   `paper/preprint.md` §8.
 
 **The check that came before all of it — passed.** An AR-pretrained model
 adapted to diffusion on 1.23M tokens might have landed at the uniform floor,
