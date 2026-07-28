@@ -1,43 +1,66 @@
-# Does a cross-layer attention residual reduce binarization damage? A factorial measurement at 0.5B
+# Sub-2-bit weights for a discrete diffusion language model: protocol, prior measurements, and a factorial in progress
 
-**Draft preprint. Every number is generated from `results/ledger.jsonl` by
-`report.py`; none is hand-entered.**
+**Draft preprint. Every number is generated from a ledger
+(`results/ledger.jsonl`, `results/diffusion_ledger.jsonl`,
+`results/grid_ledger.jsonl`); none is hand-entered. Quantities not yet
+measured are marked `[PENDING]`, and there is no other kind of placeholder.**
 
 ---
 
 ## Abstract
 
-Adding a compensating pathway around a binarised layer is a recurring design
-in extreme quantization, from Bi-Real Net's real-valued shortcuts to OneBit's
-rank-1 value vectors. The pattern is well established; what is rarely
-measured is how much of any observed gain is attributable to the pathway
-*interacting with* binarization, rather than to the pathway being generically
-useful.
+Every published quantization result for diffusion language models is
+post-training and stops at 2 bits; quantization-aware training below 2 bits
+exists only for autoregressive models. We target the gap: ternary (1.725
+bits/weight stored) weights on a masked discrete diffusion model, asked as a
+factorial — does sub-2-bit quantization damage a diffusion LM more or less
+than it damages an autoregressive one at the same recovery budget?
 
-We run the missing factorial. On Qwen1.5-0.5B-Chat we cross
-{FP32, 1-bit Q1_0_g128} with {no attention residual, attention residual} at a
-matched recovery budget of 1.23M tokens, with paired seeds and a measured
-noise floor, and report the interaction term
-`(1bit_AR - 1bit) - (fp32_AR - fp32)`.
+The cross-architecture comparison has a metric problem: autoregressive arms
+report next-token NLL, diffusion arms report a sampled NELBO bound on an
+easier task, and the two levels are not comparable. We resolve it by
+normalising against a shared floor. A model that has learned nothing scores
+`log(vocab)` under both metrics, so the *fraction of headroom below that
+floor destroyed by quantization* is dimensionless and means the same thing in
+both regimes. The interaction is computed on that quantity only; raw nats
+stay in the ledger.
 
-We find an interaction of **−0.0212 nats**, inside a decision rule fixed in
-advance (2 SE) and of the same order as the paired standard error on one of
-its own terms. The measurement supports no preferential repair of
-binarization damage, and it does not have the resolution to exclude an effect
-of that size either. What it does resolve is the direction the pathway is
-used in: 22 of 23 live gates converge *negative* — the model learns to
-subtract the accumulated attention residual — and the FP32 arm does the same,
-so the suppression is not a response to quantization damage.
+Measured so far, on Qwen1.5-0.5B-Chat at a 1.23M-token budget: the
+diffusion adaptation clears its floor by 8.06 nats (NELBO 10.539 → 3.876,
+mask accuracy 0.008 → 0.275), so quantization damage is measurable on top of
+it; ternary with an absmax scale silently zeroes 85% of a Gaussian matrix,
+which is why the scale statistic travels with the scheme; and the grid's
+remaining cells are `[PENDING]`.
 
-We also report two methodological results that hold regardless of the
-ablation's outcome: binarised transformers are numerically chaotic, with
-cross-backend disagreement rising from ~1e-5 to ~1e-2 and compounding
-monotonically with depth, which makes post-training 1-bit perplexity
-implementation-dependent; and at this budget the standard log-likelihood
-benchmarks separate FP32 from 1-bit cleanly (ARC-Easy 0.542 vs 0.262) but
-cannot separate one 1-bit arm from another, because both sit at chance, while
-KL-to-teacher still resolves. Accuracy-only tables can therefore size a
-quantization gap but not compare recovery methods.
+This work sits on a completed prior measurement: a 2x2 crossing {FP32, 1-bit}
+with a cross-layer attention residual on the autoregressive model (§Part I),
+whose result is a null — no detectable interaction, with the residual gates
+converging *negative* in FP32 as well. Part I is retained in full because it
+is what validates the quantizer, the two-backend split, and the measurement
+discipline Part II inherits: paired seeds against a measured noise floor
+(exactly zero — the pipeline is bitwise reproducible), failures kept in the
+ledger, and two methodological findings that transfer. Binarised
+transformers are numerically chaotic, with cross-backend disagreement
+compounding monotonically with depth — a diffusion model re-runs that forward
+up to dozens of times per block, and whether the chaos also compounds across
+denoising steps is an open question this protocol can now ask. And accuracy
+benchmarks floor at chance while divergence-based metrics keep resolving,
+which is why the grid's headline quantity is measured in nats and not
+accuracy points.
+
+---
+
+# Part I — The autoregressive 1-bit ablation (completed)
+
+The remainder of this part is the completed measurement, unchanged in
+substance: a factorial isolating a cross-layer attention residual's
+interaction with 1-bit quantization. Its abstract-level summary: interaction
+**−0.0212 nats**, inside a decision rule fixed in advance (2 SE) and of the
+same order as the paired standard error on one of its own terms — no
+evidence of preferential repair, and no resolution to exclude an effect of
+that size either. 22 of 23 live gates converge negative in both the 1-bit
+and FP32 arms; the model learns to subtract the accumulated residual, so the
+suppression is not a response to quantization damage.
 
 ---
 
@@ -407,10 +430,144 @@ across implementations, not within one.
 
 ---
 
-## 6. Limitations
+# Part II — Ternary weights on a discrete diffusion model (in progress)
+
+Part I answered its question and, in doing so, validated the instruments.
+Part II is the thesis: sub-2-bit weights on a model that generates by
+iterative denoising rather than left to right. Nothing published does this —
+quantization of LLaDA/Dream-family models bottoms out at 2-bit post-training
+[14, 15], with no QAT and nothing below 2 bits, while sub-2-bit QAT exists
+only for autoregressive models. One comparative datapoint favours the
+attempt: a diffusion coding model degrades *less* than an autoregressive peer
+under 2–4-bit PTQ on coding benchmarks (arXiv:2604.20079). And diffusion LMs
+need weight compression more, not less: there is no KV cache to amortise —
+every denoising step pays the full weight traffic that dominates decode
+latency.
+
+## 6. Q1_58: ternary at 1.725 bits stored
+
+Weights take values in {−1, 0, +1}, scaled per group of 128 by the group's
+**absmean**, packed five trits to a byte (3⁵ = 243 ≤ 256): 1.6 bits of
+payload against the information-theoretic log2(3) = 1.585, and 1.725
+bits/weight with the FP16 group scale amortised.
+
+The scale statistic is part of the scheme, not a tunable, and this is the
+part that does not survive being guessed. Q1_0 divides by the group maximum,
+correct there because `sign()` needs only the sign. Reusing a maximum with
+ternary rounding sends every weight below half the group's largest to zero:
+measured on Gaussian weights, 85% of the matrix zeroed at 0.83 relative
+reconstruction error, against a 35/31/34 split at 0.44 for absmean. Both
+variants train and both produce a falling loss curve; only one represents the
+matrix. The split is pinned in the test suite, the scheme identifier is a
+persisted buffer (a ternary checkpoint loaded as binary decodes base-3 bytes
+as bit fields — it loads clean and is wrong everywhere), and the freeze
+reduction is asserted to match the training forward's, because an absmax
+freeze against an absmean forward trains normally and collapses on export.
+
+Unlike Part I's binary path, the straight-through clip genuinely fires here:
+`w/absmean` exceeds 1 for the roughly one-third of weights above the group
+mean.
+
+## 7. The diffusion model, and the check that gated everything
+
+Absorbing-state masked diffusion in LLaDA's formulation: corrupt by replacing
+tokens with `[MASK]` at a rate `t ~ U(0,1)` per sequence, predict the
+originals bidirectionally, generate by iterative unmasking with
+low-confidence remasking. The loss is the `1/t`-weighted NELBO estimator,
+with the rate clamped at 1e-3 because `1/t` has infinite variance at the
+bottom of the range — a declared, slight bias in place of an undeclared
+unstable one.
+
+`[MASK]` takes token id 151646: Qwen1.5 ships 151936 embedding rows for a
+tokenizer that stops at 151646, so 290 pretrained-but-unreachable rows exist
+(distinct vectors, identical norm 0.3094, the 1.2th percentile of trained
+rows), and taking one avoids resizing the embedding, breaking the tie to the
+readout, or invalidating the HuggingFace parity test.
+
+Corruption is always injected, never drawn inside the model: two backends
+cannot agree on a random draw, so the parity suite hands both the identical
+mask and compares numbers rather than distributions — and paired seeds need
+both arms of a comparison to see identical corruption for their difference to
+be the intervention.
+
+**The gating check.** An AR-pretrained model adapted to diffusion on 1.23M
+tokens could plausibly land at the uniform floor, and quantization damage is
+not measurable on a model that has already floored — Part I hit exactly this
+in its accuracy suite, where two 1-bit arms were indistinguishable because
+both sat at chance. So the FP32 diffusion arm ran alone first:
+
+| | NELBO | mask accuracy |
+|---|---|---|
+| uniform floor, `log(151936)` | 11.9312 | — |
+| Qwen1.5-0.5B, unadapted | 10.5390 | 0.0081 |
+| after 1.23M tokens | **3.8761** | **0.2747** |
+
+The unadapted model already sits 1.39 nats below the floor — bidirectional
+context recovers that much for free, so the floor alone is not the bar. The
+adaptation moves the bound 6.66 nats and ends **8.06 below the floor**,
+naming 27% of the tokens it cannot see. There is room to measure damage in.
+(48 validation blocks of 512 tokens, 4 corruptions each, fixed evaluation
+seed. The number reproduced to the digit when the grid re-ran this cell from
+a different script.)
+
+**This bound is not comparable to Part I's perplexities.** Masked prediction
+with bidirectional context is a different and easier task than next-token
+prediction; a lower number here is not a better model, and the two are never
+placed in one column.
+
+## 8. The grid, and the shared-floor normalisation
+
+Four cells: {FP32, ternary} × {autoregressive, diffusion}, identical
+1.23M-token budget, identical data order, paired seeds, the contested
+diffusion pair first at every seed so a truncated sweep still answers the
+thesis question. The quantity is the interaction — does ternary cost the
+diffusion model a larger share of what it had than it costs the
+autoregressive one?
+
+Because the two architectures' metrics differ in level, the interaction is
+computed on a normalised quantity: both metrics assign `log(vocab) = 11.9312`
+to a model that has learned nothing, so each cell has a headroom below that
+shared floor, and the **fraction of headroom destroyed by quantization** is
+dimensionless and commensurable across regimes. Raw nats are recorded per
+cell for anyone who rejects the normalisation.
+
+Status at this draft:
+
+| cell | metric | loss (nats) | headroom | status |
+|---|---|---|---|---|
+| fp32_diff | NELBO | 3.8761 | +8.0551 | seed 0 complete |
+| ternary_diff | NELBO | `[PENDING]` | `[PENDING]` | running |
+| fp32_ar | NLL | `[PENDING]` | `[PENDING]` | queued |
+| ternary_ar | NLL | `[PENDING]` | `[PENDING]` | queued |
+
+One shape observation from the 2-step smoke run, reported as shape and
+nothing more: before any meaningful recovery, ternary put the diffusion model
+*below* the uniform floor (headroom −1.14) while the autoregressive twin kept
++1.52. Post-training ternary destroys the diffusion model outright at this
+scale; what the grid measures is what a matched recovery budget buys back in
+each regime. Single seeds carry no error bars, and Part I documents at length
+what single-seed confidence is worth.
+
+**The open question the protocol can now ask.** Part I measured binarised
+stacks amplifying cross-backend perturbations monotonically with *depth* —
+and measured the one counterexample: FP16 scale rounding does not compound,
+because it moves magnitudes without flipping any sign bit, and only
+perturbations that cross the discontinuity amplify. A diffusion model feeds
+its own output back through the stack up to dozens of times per block.
+Whether discontinuity-crossing noise also compounds across *denoising steps*
+is a damage mode with no autoregressive analogue, nobody has measured it, and
+the instruments here — bitwise-reproducible pipeline, injected corruption,
+two pinned backends — are sufficient to do so.
+
+## 9. Limitations
+
+Shared by both parts:
 
 - **One model, one scale (0.5B).** Extreme-quantization results are known to
   change with scale; BitNet b1.58's parity claim explicitly begins at 3B.
+  The named target of Part II's thesis — models like DiffusionGemma-26B-A4B —
+  cannot be QAT'd on this hardware at all, so Part II bears the same relation
+  to its target that BitNet's small-scale ablations bear to its 3B claim.
 - **1.23M recovery tokens**, three to six orders of magnitude below the
   ternary-QAT literature (BitNet b1.58 2B4T: 4T tokens). This is a
   low-budget-recovery result and is labelled as one throughout.
@@ -436,9 +593,26 @@ across implementations, not within one.
   confound in §5.3. No run varies it.
 - **Throughput numbers are machine-local** to Apple Silicon and MLX.
 
+Specific to Part II:
+
+- **The grid is incomplete.** One of four cells at one seed. Nothing in §8
+  beyond the gating check and the smoke-run shape is a result yet.
+- **The headroom-share normalisation is a modelling choice.** It is the only
+  quantity offered as commensurable across architectures, the raw nats are
+  ledgered so it can be recomputed differently, and a reader who rejects it
+  is left with two within-architecture costs and no interaction.
+- **The diffusion evaluation is a bound**, estimated with 4 corruptions per
+  block; its Monte Carlo error is not yet characterised, and it shares the
+  wikitext-2 single-corpus caveat above.
+- **The adaptation is shallow.** 1.23M tokens of continued pretraining on top
+  of an autoregressive model, not a diffusion model trained as one — the
+  Dream/TESS-2 recipe at a tiny fraction of their budgets. Mask accuracy of
+  0.27 clears the measurability bar; it is not a claim of a usable model.
+- **Cross-denoising-step error compounding is posed, not measured** (§8).
+
 ---
 
-## 7. Related work
+## 10. Related work
 
 **Extreme-quantization LLMs.** BitNet [7] and BitNet b1.58 [8]; BitNet a4.8
 and v2 for activation quantization; the 2B4T report [9] for a fully trained
@@ -492,10 +666,21 @@ existing compensation designs.
 
 ```bash
 python -m pytest tests/          # validate against HuggingFace first
+
+# Part I
 python run_ablation.py --stage full --steps 300 --seeds 0 1 2
 python report.py
+
+# Part II
+python run_diffusion_check.py --steps 300      # the gating check
+python run_grid.py --seeds 0 1 2 --resume      # the factorial
 ```
 
-Every number in the results table traces to a row in
-`results/ledger.jsonl` carrying its arm, seed, git commit and full training
-configuration. Failed and diverged runs are retained in the ledger.
+Every number traces to a ledger row carrying its arm or cell, seed, git
+commit and full training configuration: `results/ledger.jsonl` for Part I,
+`results/diffusion_ledger.jsonl` and `results/grid_ledger.jsonl` for
+Part II. Failed and diverged runs are retained; plumbing runs are tagged
+`smoke` so no aggregate can pool them. The pipeline is bitwise reproducible
+on this machine — the gating check's NELBO reproduced to the digit when the
+grid re-ran the same cell from a different script — so any cell can be
+rebuilt exactly from its ledger row.
