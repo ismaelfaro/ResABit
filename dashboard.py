@@ -29,9 +29,14 @@ DEFAULT_LOG = Path("results/export.log")
 CHECKPOINTS = Path("checkpoints")
 
 STEP = re.compile(r"^\s*step\s+(\d+)/(\d+)\s+loss\s+([\d.]+)\s+lr\s+(\S+)\s+(\d+)s")
-# Both header shapes: the export writes "arm : onebit  (seed 0)", the
-# diffusion check writes "arm : diffusion_fp32  seed 0".
+# Three header shapes: the export writes "arm : onebit  (seed 0)", the
+# diffusion check writes "arm : diffusion_fp32  seed 0", and the grid and
+# ablation sweeps write "=== cell  seed 0 ===" per cell.
 ARM = re.compile(r"^arm\s+:\s+(\S+)\s+\(?seed (\d+)\)?")
+CELL = re.compile(r"^=== (\S+)\s+seed (\d+)(?:\s+\(\S+\))?\s+===")
+GRID_RESULT = re.compile(
+    r"^\s*->\s+(nll|nelbo)\s+([\d.]+)\s+floor\s+([\d.]+)\s+headroom\s+(\S+)"
+)
 NELBO = re.compile(
     r"^\s*(\S+)\s+nelbo\s+([\d.]+)\s+floor\s+([\d.]+)\s+headroom\s+(\S+)\s+"
     r"mask-acc\s+([\d.]+)"
@@ -78,12 +83,13 @@ class Arm:
     nelbo: list[tuple[str, float, float, float, float]] = field(default_factory=list)
     gain: str | None = None
     verdict: str | None = None
+    finished: bool = False
 
     @property
     def state(self) -> str:
         if self.error:
             return "failed"
-        if self.wrote:
+        if self.wrote or self.finished or self.verdict:
             return "done"
         if self.diverged_at is not None:
             return "diverged"
@@ -104,7 +110,7 @@ def parse(log: Path) -> list[Arm]:
 
     for raw in log.read_text(errors="replace").splitlines():
         line = raw.rstrip()
-        if m := ARM.match(line):
+        if m := ARM.match(line) or CELL.match(line):
             current = Arm(name=m.group(1), seed=int(m.group(2)))
             arms.append(current)
             continue
@@ -144,6 +150,14 @@ def parse(log: Path) -> list[Arm]:
             current.error = m.group(1)
         elif m := REFUSED.match(line):
             current.error = "refused: " + m.group(1)
+        elif m := GRID_RESULT.match(line):
+            metric, loss, floor, headroom = m.groups()
+            current.nelbo.append((metric, float(loss), float(floor),
+                                  float(headroom), float("nan")))
+            # The grid prints its result line exactly once, when the cell's
+            # evaluation is done -- unlike the diffusion check, whose first
+            # nelbo line precedes training.
+            current.finished = True
         elif m := NELBO.match(line):
             current.nelbo.append((
                 m.group(1), float(m.group(2)), float(m.group(3)),
@@ -179,7 +193,8 @@ def live_processes(sample_seconds: float = 0.0) -> list[dict]:
         ["ps", "-Ao", "pid=,etime=,time=,rss=,command="],
         capture_output=True, text=True, check=False,
     )
-    entrypoints = ("export_checkpoint.py", "run_ablation.py", "run_diffusion_check.py")
+    entrypoints = ("export_checkpoint.py", "run_ablation.py",
+                   "run_diffusion_check.py", "run_grid.py")
     found = []
     for line in out.stdout.splitlines():
         if not any(entry in line for entry in entrypoints):
@@ -313,6 +328,13 @@ def render(log: Path, sample_seconds: float = 0.0) -> str:
         lines.append(f"  {label:<22} {arm.state.upper()}")
 
         proc = by_arm.get(arm.name) if arm.state not in ("done", "failed") else None
+        if proc is None and arm.state not in ("done", "failed") and arm is arms[-1]:
+            # A grid process runs every cell under one pid, so its command
+            # line names no cell. Attach it to the log's last open cell --
+            # the only one a single sequential process can be inside.
+            orphans = [p for p in running if p["arm"] == "?"]
+            if len(orphans) == 1:
+                proc = orphans[0]
         stale = proc is not None and arm.steps_done == 0
         if stale:
             # "STARTING" is wrong for something 25 minutes in. The log says
@@ -406,11 +428,14 @@ def render(log: Path, sample_seconds: float = 0.0) -> str:
         if arm.bits:
             lines.append(f"    bits/weight   {arm.bits}")
         for label, nelbo, floor, headroom, accuracy in arm.nelbo:
-            # Headroom, not NELBO, is the number that decides anything: a
-            # bound means nothing without the floor it has to clear.
+            # Headroom, not the raw loss, is the number that decides
+            # anything: a bound means nothing without the floor it has to
+            # clear. The grid lines carry no mask accuracy (NaN); skip it.
+            import math
+            acc = "" if math.isnan(accuracy) else f"  mask-acc {accuracy:.4f}"
             lines.append(
-                f"    {label:<12} nelbo {nelbo:8.4f}  floor {floor:.4f}  "
-                f"headroom {headroom:+.4f}  mask-acc {accuracy:.4f}"
+                f"    {label:<12} {nelbo:8.4f}  floor {floor:.4f}  "
+                f"headroom {headroom:+.4f}{acc}"
             )
         if arm.gain:
             lines.append(f"    adaptation    {arm.gain} nats")
