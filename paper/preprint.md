@@ -531,14 +531,29 @@ shared floor, and the **fraction of headroom destroyed by quantization** is
 dimensionless and commensurable across regimes. Raw nats are recorded per
 cell for anyone who rejects the normalisation.
 
-Status at this draft:
+Status at this draft — seed 0 complete, seeds 1 and 2 `[PENDING]`:
 
-| cell | metric | loss (nats) | headroom | status |
-|---|---|---|---|---|
-| fp32_diff | NELBO | 3.8761 | +8.0551 | seed 0 complete |
-| ternary_diff | NELBO | `[PENDING]` | `[PENDING]` | running |
-| fp32_ar | NLL | `[PENDING]` | `[PENDING]` | queued |
-| ternary_ar | NLL | `[PENDING]` | `[PENDING]` | queued |
+| cell | metric | loss (nats) | headroom |
+|---|---|---|---|
+| fp32_diff | NELBO | 3.8761 | +8.0551 |
+| ternary_diff | NELBO | 5.9758 | +5.9554 |
+| fp32_ar | NLL | 2.6846 | +9.2466 |
+| ternary_ar | NLL | 4.0927 | +7.8385 |
+
+At seed 0, ternary costs the diffusion model 2.100 nats of NELBO — 26.1% of
+its headroom — against 1.408 nats of NLL, 15.2% of headroom, on the
+autoregressive side: an interaction of **+0.108** in headroom share, ternary
+hurting diffusion more. **One seed carries no error bar and no verdict**;
+Part I's per-seed deltas changed sign three times across five seeds, and
+this number is reported now only so that its later movement is itself on the
+record. Two supporting observations at the same seed: `fp32_ar` reproduced
+Part I's fine-tuned FP32 NLL to the digit (2.6846) from a different script,
+and QAT recovered the ternary diffusion cell from below the uniform floor
+(smoke headroom −1.14) to +5.96.
+
+Ternary against Part I's binary, same architecture, same budget, seed 0:
+NLL 4.093 versus 5.655. The 0.6 extra bits per weight buy back 1.56 nats of
+the binarization gap.
 
 One shape observation from the 2-step smoke run, reported as shape and
 nothing more: before any meaningful recovery, ternary put the diffusion model
@@ -595,7 +610,7 @@ Shared by both parts:
 
 Specific to Part II:
 
-- **The grid is incomplete.** One of four cells at one seed. Nothing in §8
+- **The grid is incomplete.** Four cells at one seed. Nothing in §8
   beyond the gating check and the smoke-run shape is a result yet.
 - **The headroom-share normalisation is a modelling choice.** It is the only
   quantity offered as commensurable across architectures, the raw nats are
