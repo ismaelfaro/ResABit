@@ -29,8 +29,10 @@ Measured so far, on Qwen1.5-0.5B-Chat at a 1.23M-token budget: the
 diffusion adaptation clears its floor by 8.06 nats (NELBO 10.539 → 3.876,
 mask accuracy 0.008 → 0.275), so quantization damage is measurable on top of
 it; ternary with an absmax scale silently zeroes 85% of a Gaussian matrix,
-which is why the scale statistic travels with the scheme; and the grid's
-remaining cells are `[PENDING]`.
+which is why the scale statistic travels with the scheme; and at the first
+seed, ternary costs the diffusion model 26.1% of its headroom against 15.2%
+on the autoregressive side — an interaction of +0.108 in headroom share,
+carrying no error bar until the remaining seeds land (`[PENDING]`).
 
 This work sits on a completed prior measurement: a 2x2 crossing {FP32, 1-bit}
 with a cross-layer attention residual on the autoregressive model (§Part I),
