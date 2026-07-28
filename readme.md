@@ -275,6 +275,7 @@ src/
   loader.py            Strict HF weight loading — refuses a partial map
   data.py              wikitext streams, strided eval windows, zero-shot tasks
   evaluate.py          Perplexity, zero-shot accuracy, KL-to-teacher
+  trainer.py           Backend-neutral config + pure-PyTorch QAT (CUDA/Colab)
   mlx_backend/
     model.py           MLX port (1.72x faster training on Apple Silicon)
     train.py           QAT loop
@@ -290,6 +291,8 @@ convert.py             HF weights -> frozen 1-bit checkpoint
 inference.py           Generation from a checkpoint
 tests/                 Parity against HuggingFace and across backends
 docs/PROTOCOL.md       Why the experiment is shaped this way
+docs/COLAB.md          Running on Colab / connecting VS Code to it
+colab/                 Ready-to-open Colab notebook
 paper/preprint.md      The write-up
 paper/post.md          The same result for a general technical audience
 ```

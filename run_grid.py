@@ -43,19 +43,40 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
 import torch
 
-from run_ablation import build_torch_model, git_commit
 from src.config import ModelConfig
 from src.data import load_wikitext_tokens, make_training_windows
 from src.diffusion import uniform_bound
 from src.evaluate import evaluate_diffusion_nelbo, evaluate_perplexity
 from src.loader import HF_MODEL_ID
-from src.mlx_backend.train import TrainConfig, mlx_to_torch_state, run_qat
+from src.trainer import TrainConfig
+
+# MLX exists only on Apple Silicon; a CUDA/Colab host trains through the
+# pure-PyTorch loop instead. Import lazily so the grid runs on both.
+try:
+    import mlx.core  # noqa: F401
+    HAS_MLX = True
+except ImportError:
+    HAS_MLX = False
 
 LEDGER = Path("results/grid_ledger.jsonl")
+
+
+def git_commit() -> str:
+    """Local copy: run_ablation imports MLX at module top, so a CUDA host
+    cannot import anything from it."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:                              # noqa: BLE001
+        return "unknown"
 
 
 @dataclass(frozen=True)
@@ -112,12 +133,21 @@ def run_cell(
     started = time.time()
 
     try:
-        model, train_result = run_qat(config, cfg, windows)
-        state = mlx_to_torch_state(model)
-        del model
-        mx.clear_cache()
+        if args.backend == "mlx":
+            import mlx.core as mx
 
-        torch_model = build_torch_model(cell, state, device)
+            from run_ablation import build_torch_model
+            from src.mlx_backend.train import mlx_to_torch_state, run_qat
+
+            model, train_result = run_qat(config, cfg, windows)
+            state = mlx_to_torch_state(model)
+            del model
+            mx.clear_cache()
+            torch_model = build_torch_model(cell, state, device)
+        else:
+            from src.trainer import run_qat_torch
+
+            torch_model, train_result = run_qat_torch(config, cfg, windows, device)
         if cell.diffusion:
             result = evaluate_diffusion_nelbo(
                 torch_model, val_tokens, device,
@@ -155,6 +185,7 @@ def run_cell(
         "status": status,
         "error": error,
         "commit": git_commit(),
+        "backend": getattr(train_result, "backend", "mlx") if train_result else None,
         "wall_seconds": round(time.time() - started, 1),
         "quantize_linear": cell.quantize_linear,
         "diffusion": cell.diffusion,
@@ -258,11 +289,23 @@ def main() -> None:
     p.add_argument("--eval-samples", type=int, default=4)
     p.add_argument("--resume", action="store_true",
                    help="skip (cell, seed) pairs already completed")
+    p.add_argument("--backend", default="auto", choices=["auto", "mlx", "torch"],
+                   help="training backend; auto picks MLX where it exists")
     args = p.parse_args()
 
     sys.stdout.reconfigure(line_buffering=True)
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    if args.backend == "auto":
+        args.backend = "mlx" if HAS_MLX else "torch"
+    if args.backend == "mlx" and not HAS_MLX:
+        raise SystemExit("--backend mlx requested but MLX is not installed "
+                         "(Apple Silicon only); use --backend torch")
+
+    device = torch.device(
+        "cuda" if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available()
+        else "cpu"
+    )
     train_cfg = TrainConfig(
         steps=args.steps,
         batch_size=args.batch_size,
@@ -279,6 +322,14 @@ def main() -> None:
           f"tok = {train_cfg.total_tokens/1e6:.2f}M tokens per cell")
     print(f"uniform floor : {uniform_bound(ModelConfig().vocab_size):.4f} nats")
     print(f"seeds         : {args.seeds}")
+    print(f"backend       : {args.backend}  (eval device {device})")
+    if args.backend != "mlx":
+        # The ledger row records the backend for the same reason it records
+        # the commit: this repository measured quantized stacks amplifying
+        # backend differences to ~1e-2, so numbers from different backends
+        # pair but do not reproduce each other bitwise.
+        print("note          : torch-backend runs pair with mlx runs at the "
+              "same seed but are not bitwise comparable to them")
 
     from transformers import AutoTokenizer
 

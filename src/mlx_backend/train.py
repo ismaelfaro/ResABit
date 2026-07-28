@@ -29,7 +29,6 @@ Effective learning-rate gain on the residual gates
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass, field
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -38,55 +37,13 @@ import numpy as np
 from mlx.utils import tree_flatten, tree_map
 
 from ..config import ModelConfig
+from ..trainer import TrainConfig, TrainResult, batch_order, cosine_lr
 from .model import MLXResABit
 
+# TrainConfig and TrainResult live in ``src.trainer`` so the pure-PyTorch
+# loop (Colab/CUDA, where MLX does not exist) shares them; re-exported here
+# because every entry point imports them from this module.
 __all__ = ["TrainConfig", "TrainResult", "run_qat"]
-
-
-@dataclass
-class TrainConfig:
-    steps: int = 300
-    batch_size: int = 2
-    grad_accum: int = 4
-    seq_len: int = 512
-    learning_rate: float = 1e-4
-    warmup_frac: float = 0.05
-    min_lr_frac: float = 0.1
-    weight_decay: float = 0.01
-    grad_clip: float = 1.0
-    freeze_embeddings: bool = True
-    seed: int = 0
-    log_every: int = 25
-
-    @property
-    def tokens_per_step(self) -> int:
-        return self.batch_size * self.grad_accum * self.seq_len
-
-    @property
-    def total_tokens(self) -> int:
-        return self.steps * self.tokens_per_step
-
-
-@dataclass
-class TrainResult:
-    final_train_loss: float
-    loss_curve: list[float] = field(default_factory=list)
-    alpha_curve: list[list[float]] = field(default_factory=list)
-    wall_seconds: float = 0.0
-    tokens_seen: int = 0
-    diverged: bool = False
-
-    def as_dict(self) -> dict:
-        return asdict(self)
-
-
-def _cosine_lr(step: int, cfg: TrainConfig) -> float:
-    warmup = max(1, int(cfg.warmup_frac * cfg.steps))
-    if step < warmup:
-        return cfg.learning_rate * (step + 1) / warmup
-    progress = (step - warmup) / max(1, cfg.steps - warmup)
-    floor = cfg.learning_rate * cfg.min_lr_frac
-    return floor + 0.5 * (cfg.learning_rate - floor) * (1 + np.cos(np.pi * progress))
 
 
 def _batches(windows: mx.array, cfg: TrainConfig):
@@ -96,11 +53,8 @@ def _batches(windows: mx.array, cfg: TrainConfig):
     removes data-order variance from the difference between them.
     """
     rng = np.random.default_rng(cfg.seed)
-    n = windows.shape[0]
-    need = cfg.steps * cfg.grad_accum * cfg.batch_size
-    order = np.concatenate(
-        [rng.permutation(n) for _ in range(need // n + 1)]
-    )[:need]
+    order = batch_order(windows.shape[0], cfg, rng)
+    need = len(order)
     for i in range(0, need, cfg.batch_size):
         chunk = windows[order[i : i + cfg.batch_size].tolist()]
         yield chunk[:, :-1], chunk[:, 1:]
@@ -113,16 +67,15 @@ def _diffusion_batches(windows: mx.array, cfg: TrainConfig):
     a denoiser predicts the token at the position it is looking at. The
     corruption comes from the seeded numpy generator rather than from MLX so
     that a PyTorch run at the same seed sees the identical masks, which is
-    what makes the two backends comparable and the seeds paired.
+    what makes the two backends comparable and the seeds paired. The shared
+    generator discipline (one `batch_order` sweep, then per-batch rate and
+    mask draws in this exact order) is the contract `src.trainer` documents.
     """
     from ..diffusion import MIN_RATE
 
     rng = np.random.default_rng(cfg.seed)
-    n = windows.shape[0]
-    need = cfg.steps * cfg.grad_accum * cfg.batch_size
-    order = np.concatenate(
-        [rng.permutation(n) for _ in range(need // n + 1)]
-    )[:need]
+    order = batch_order(windows.shape[0], cfg, rng)
+    need = len(order)
     for i in range(0, need, cfg.batch_size):
         chunk = windows[order[i : i + cfg.batch_size].tolist()]
         B, L = chunk.shape
@@ -170,7 +123,7 @@ def run_qat(
     t_start = time.perf_counter()
 
     for step in range(train_config.steps):
-        lr = _cosine_lr(step, train_config)
+        lr = cosine_lr(step, train_config)
         optimizer.learning_rate = lr
 
         accumulated = None
