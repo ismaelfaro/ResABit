@@ -1,63 +1,141 @@
-"""
-Configuration for 1-bit + Attention Residual model.
+"""Model configuration for ResABit.
 
-Base architecture: Qwen/Qwen1.5-0.5B-Chat
-  - 24 transformer layers
-  - hidden_size = 1024
-  - num_attention_heads = 16
-  - num_key_value_heads = 16
-  - intermediate_size = 2816  (SwiGLU)
-  - vocab_size = 151936
-  - max_position_embeddings = 32768
-  - rope_theta = 1_000_000
-  - rms_norm_eps = 1e-6
+Base architecture is Qwen1.5-0.5B-Chat (``Qwen2ForCausalLM``):
+24 layers, hidden 1024, 16 heads (full MHA), SwiGLU intermediate 2816,
+vocab 151936, RoPE theta 1e6, tied input/output embeddings.
 
-1-bit quantization (Q1_0_g128):
-  w_i = s_g * (2*b_i - 1),  b_i in {0, 1}
-  s_g: FP16 scale per group of GROUP_SIZE weights
-  Effective bits = 1 + 16/GROUP_SIZE = 1.125 bits/weight
+Two orthogonal switches drive the ablation:
 
-Attention Residuals (from "Attention Residuals" paper, arXiv 2603.15031):
-  R_0 = 0
-  For each layer l:
-    A_l = Attention(RMSNorm(h_{l-1}))
-    R_l = R_{l-1} + A_l          (running sum of all attention outputs)
-    h_l = h_{l-1} + A_l + alpha * R_{l-1} + MLP(RMSNorm(h_{l-1} + A_l))
-  The accumulated residual R is gated by a learnable scalar alpha.
+``quantize_linear``
+    Binarise the seven projections in every block (q, k, v, o, gate, up,
+    down) with Q1_0_g128. Embeddings and the LM head are deliberately left
+    in full precision -- see ``bits_per_weight`` below for why that matters
+    when quoting a compression ratio.
+
+``use_attention_residuals``
+    Add the cross-layer attention accumulator from arXiv 2603.15031.
+
+Setting both to False reproduces stock Qwen1.5-0.5B exactly, which is what
+``tests/test_parity.py`` asserts against HuggingFace.
 """
 
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
 
 
 @dataclass
 class ModelConfig:
-    # ── Architecture (Qwen1.5-0.5B-Chat) ───────────────────────────────────
+    # -- Architecture (Qwen1.5-0.5B-Chat) --------------------------------
     vocab_size: int = 151936
     hidden_size: int = 1024
     intermediate_size: int = 2816
     num_hidden_layers: int = 24
     num_attention_heads: int = 16
-    num_key_value_heads: int = 16       # full MHA for 0.5B
-    head_dim: int = 64                  # hidden_size // num_attention_heads
+    num_key_value_heads: int = 16
     max_position_embeddings: int = 32768
     rope_theta: float = 1_000_000.0
     rms_norm_eps: float = 1e-6
     tie_word_embeddings: bool = True
+    attention_bias: bool = True   # Qwen2 carries bias on q/k/v, not on o
     bos_token_id: int = 151643
     eos_token_id: int = 151645
 
-    # ── 1-bit Quantization (Q1_0_g128) ────────────────────────────────────
-    quant_group_size: int = 128         # weights per scale group
-    quantize_embeddings: bool = True    # 1-bit embed + lm_head
-    quantize_attention: bool = True     # 1-bit Q,K,V,O projections
-    quantize_mlp: bool = True           # 1-bit gate,up,down projections
+    # -- Sub-2-bit quantization -------------------------------------------
+    quantize_linear: bool = True
+    quant_group_size: int = 128
+    # ``q1_0``  -- one sign bit, absmax group scale, 1.125 bits/weight
+    # ``q1_58`` -- {-1,0,+1}, absmean group scale, 1.725 bits/weight
+    # The scale statistic is part of the scheme, not a tunable: absmax with
+    # ternary levels rounds 85% of a Gaussian matrix to zero.
+    quant_scheme: str = "q1_0"
 
-    # ── Attention Residuals ────────────────────────────────────────────────
-    use_attention_residuals: bool = True
-    # Learnable scale for accumulated attention residual (initialised to 0
-    # so the model starts as a standard transformer and gradually learns to
-    # exploit the cross-layer attention signal).
+    # -- Attention residuals ---------------------------------------------
+    use_attention_residuals: bool = False
+    # alpha starts at 0 so the residual pathway is initially a no-op and the
+    # arm is numerically identical to its no-AR twin at step 0.
     attn_residual_init: float = 0.0
 
-    # ── Training defaults ─────────────────────────────────────────────────
-    dropout: float = 0.0
+    # -- Discrete diffusion -----------------------------------------------
+    # Absorbing-state masked diffusion, LLaDA's formulation: corrupt by
+    # replacing tokens with [MASK] at a sampled rate, predict the originals,
+    # generate by unmasking iteratively. Turning this on makes attention
+    # bidirectional, which is the whole point -- a denoiser sees the entire
+    # sequence, including the tokens after the one it is filling in.
+    diffusion: bool = False
+    # Qwen1.5 ships 151936 embedding rows for a tokenizer that only reaches
+    # 151646, so rows 151646..151935 exist, are never emitted, and carry
+    # pretrained-but-unused vectors. Taking one for [MASK] avoids resizing
+    # the embedding, avoids breaking the tie to the readout, and keeps the
+    # HuggingFace parity test meaningful. It is not free: the row is not a
+    # trained mask representation, it is whatever initialisation Qwen left
+    # there, so the adaptation has to learn it from scratch.
+    mask_token_id: int = 151646
+
+    def __post_init__(self) -> None:
+        if self.quant_scheme not in ("q1_0", "q1_58"):
+            raise ValueError(f"unknown quant_scheme {self.quant_scheme!r}")
+        if self.diffusion and not 0 <= self.mask_token_id < self.vocab_size:
+            raise ValueError(
+                f"mask_token_id {self.mask_token_id} is outside the embedding "
+                f"table (vocab_size {self.vocab_size})"
+            )
+        if self.hidden_size % self.num_attention_heads:
+            raise ValueError("hidden_size must be divisible by num_attention_heads")
+        if self.num_attention_heads % self.num_key_value_heads:
+            raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
+        if self.hidden_size % self.quant_group_size:
+            raise ValueError("hidden_size must be divisible by quant_group_size")
+        if self.intermediate_size % self.quant_group_size:
+            raise ValueError("intermediate_size must be divisible by quant_group_size")
+
+    @property
+    def head_dim(self) -> int:
+        return self.hidden_size // self.num_attention_heads
+
+    # -- Parameter accounting ---------------------------------------------
+    # Quoting "1.125 bits/weight" for the whole model would be false: only the
+    # block projections are binarised. These helpers keep the README and the
+    # results table honest about which denominator is in play.
+
+    @property
+    def num_quantized_params(self) -> int:
+        """Weights actually stored as sign bits + FP16 group scales."""
+        h, i = self.hidden_size, self.intermediate_size
+        kv = self.num_key_value_heads * self.head_dim
+        per_layer = h * h + 2 * (h * kv) + h * h + 2 * (i * h) + h * i
+        return per_layer * self.num_hidden_layers
+
+    @property
+    def num_full_precision_params(self) -> int:
+        """Embeddings, LM head (if untied), norms and attention biases."""
+        h, v = self.hidden_size, self.vocab_size
+        embed = v * h * (1 if self.tie_word_embeddings else 2)
+        norms = 2 * h * self.num_hidden_layers + h
+        bias = 2 * self.num_key_value_heads * self.head_dim + h
+        biases = bias * self.num_hidden_layers if self.attention_bias else 0
+        alphas = self.num_hidden_layers if self.use_attention_residuals else 0
+        return embed + norms + biases + alphas
+
+    @property
+    def bits_per_quantized_weight(self) -> float:
+        """Scheme's payload plus one FP16 scale amortised over the group."""
+        from .quantization import bits_per_weight
+
+        return bits_per_weight(self.quant_scheme, self.quant_group_size)
+
+    @property
+    def effective_bits_per_weight(self) -> float:
+        """Model-wide average, counting the full-precision remainder."""
+        q, f = self.num_quantized_params, self.num_full_precision_params
+        if not self.quantize_linear:
+            return 32.0
+        return (q * self.bits_per_quantized_weight + f * 32.0) / (q + f)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> ModelConfig:
+        fields = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in d.items() if k in fields})

@@ -1,137 +1,79 @@
-"""
-convert.py — Load Qwen/Qwen1.5-0.5B-Chat weights and convert to 1-bit format.
+"""Convert Qwen1.5-0.5B-Chat into a ResABit checkpoint.
 
-Usage
------
-    python convert.py --output ./checkpoints/qwen0.5b-1bit
+    python convert.py --output checkpoints/qwen0.5b-1bit
+    python convert.py --no-quantize --output checkpoints/qwen0.5b-fp32
 
-The script:
-  1. Downloads Qwen1.5-0.5B-Chat from HuggingFace (GGUF or safetensors).
-  2. Maps its weights into the OneBitResidualLM architecture.
-  3. Optionally quantises all OneBitLinear layers to packed bits.
-  4. Saves a PyTorch checkpoint ready for inference.py.
+Freezing to packed bits is one-way: the master weights are dropped and only
+sign bits plus FP16 group scales remain. Quantise a model you have already
+fine-tuned, not one you still intend to train.
 """
+
+from __future__ import annotations
 
 import argparse
-import os
 import json
-import torch
-import torch.nn as nn
 from pathlib import Path
 
+import torch
+
 from src.config import ModelConfig
-from src.model import OneBitResidualLM
-from src.quantization import quantize_model_weights
+from src.loader import HF_MODEL_ID, load_pretrained
+from src.quantization import LowBitLinear, quantize_model_weights
 
 
-# ── Weight name mapping: Qwen1.5 → OneBitResidualLM ──────────────────────────
-
-def _map_state_dict(hf_sd: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """
-    Remap HuggingFace Qwen1.5-0.5B key names to our model's naming scheme.
-
-    HF names (examples):
-        model.embed_tokens.weight
-        model.layers.0.self_attn.q_proj.weight
-        model.layers.0.self_attn.k_proj.weight
-        model.layers.0.self_attn.v_proj.weight
-        model.layers.0.self_attn.o_proj.weight
-        model.layers.0.mlp.gate_proj.weight
-        model.layers.0.mlp.up_proj.weight
-        model.layers.0.mlp.down_proj.weight
-        model.layers.0.input_layernorm.weight
-        model.layers.0.post_attention_layernorm.weight
-        model.norm.weight
-        lm_head.weight
-
-    Our names:
-        embed_tokens.weight  (or embed_tokens.weight if nn.Embedding)
-        layers.0.self_attn.q_proj.weight
-        layers.0.self_attn.k_proj.weight
-        ...
-        norm.weight
-        lm_head.weight
-    """
-    mapping: dict[str, torch.Tensor] = {}
-
-    prefix = "model."
-    for key, val in hf_sd.items():
-        new_key = key
-        if new_key.startswith(prefix):
-            new_key = new_key[len(prefix):]
-        mapping[new_key] = val
-
-    return mapping
-
-
-def load_hf_model(model_name: str) -> dict[str, torch.Tensor]:
-    """Download and return the HF safetensors state dict."""
-    try:
-        from huggingface_hub import snapshot_download
-        from safetensors.torch import load_file
-    except ImportError:
-        raise ImportError("pip install huggingface-hub safetensors")
-
-    print(f"Downloading {model_name} …")
-    local_dir = snapshot_download(
-        repo_id=model_name,
-        ignore_patterns=["*.gguf", "*.bin", "*.ot", "flax_model*", "tf_model*"],
-    )
-    sd: dict[str, torch.Tensor] = {}
-    for p in Path(local_dir).glob("*.safetensors"):
-        sd.update(load_file(str(p)))
-    if not sd:
-        # Fall back to .bin
-        import torch
-        for p in Path(local_dir).glob("pytorch_model*.bin"):
-            sd.update(torch.load(str(p), map_location="cpu"))
-    return sd
-
-
-def convert(
-    model_name: str = "Qwen/Qwen1.5-0.5B-Chat",
-    output_dir: str = "./checkpoints/qwen0.5b-1bit",
-    quantize: bool = True,
-    device: str = "cpu",
-) -> None:
-    config = ModelConfig()
-    model = OneBitResidualLM(config).to(device)
-
-    print("Loading HuggingFace weights …")
-    hf_sd = load_hf_model(model_name)
-    our_sd = _map_state_dict(hf_sd)
-
-    # Load with strict=False so the new attn_residual_scale params are ignored
-    missing, unexpected = model.load_state_dict(our_sd, strict=False)
-    print(f"  Missing  keys : {missing}")
-    print(f"  Unexpected keys: {unexpected}")
-
-    if quantize:
-        print("Quantising to 1-bit (Q1_0_g128) …")
-        quantize_model_weights(model)
-
-    os.makedirs(output_dir, exist_ok=True)
-    ckpt_path = os.path.join(output_dir, "model.pt")
-    torch.save({"config": config.__dict__, "state_dict": model.state_dict()}, ckpt_path)
-    print(f"Saved → {ckpt_path}")
-
-    # Save human-readable config
-    with open(os.path.join(output_dir, "config.json"), "w") as f:
-        json.dump(config.__dict__, f, indent=2)
-
-    # Report size
-    size_mb = os.path.getsize(ckpt_path) / 1e6
-    print(f"Checkpoint size: {size_mb:.1f} MB")
+def checkpoint_bytes(model) -> int:
+    total, seen = 0, set()
+    for module in model.modules():
+        if isinstance(module, LowBitLinear):
+            total += module.storage_bytes()
+            continue
+        # recurse=False, so a parameter is attributed to the module that
+        # owns it and a LowBitLinear's tensors are never reached here. The
+        # id() set catches tied embeddings, which appear under two names.
+        for param in module.parameters(recurse=False):
+            if id(param) in seen:
+                continue
+            seen.add(id(param))
+            total += param.numel() * param.element_size()
+    return total
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Convert Qwen1.5-0.5B-Chat to 1-bit")
-    p.add_argument("--model", default="Qwen/Qwen1.5-0.5B-Chat")
-    p.add_argument("--output", default="./checkpoints/qwen0.5b-1bit")
-    p.add_argument("--no-quantize", action="store_true")
-    p.add_argument("--device", default="cpu")
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--model", default=HF_MODEL_ID)
+    p.add_argument("--output", default="checkpoints/qwen0.5b-1bit")
+    p.add_argument("--no-quantize", action="store_true",
+                   help="keep FP32 master weights (for the baseline arm)")
+    p.add_argument("--attention-residuals", action="store_true")
     args = p.parse_args()
-    convert(args.model, args.output, not args.no_quantize, args.device)
+
+    config = ModelConfig(
+        quantize_linear=not args.no_quantize,
+        use_attention_residuals=args.attention_residuals,
+    )
+    model = load_pretrained(config, model_id=args.model)
+
+    if config.quantize_linear:
+        print("freezing to Q1_0_g128 ...")
+        quantize_model_weights(model)
+
+    out = Path(args.output)
+    out.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {"config": config.to_dict(), "state_dict": model.state_dict()},
+        out / "model.pt",
+    )
+    (out / "config.json").write_text(json.dumps(config.to_dict(), indent=2))
+
+    on_disk = (out / "model.pt").stat().st_size / 1e6
+    print(
+        f"saved -> {out/'model.pt'}\n"
+        f"  file size            : {on_disk:.1f} MB\n"
+        f"  quantized params     : {config.num_quantized_params/1e6:.1f}M "
+        f"@ {config.bits_per_quantized_weight:.3f} bits\n"
+        f"  full-precision params: {config.num_full_precision_params/1e6:.1f}M @ 32 bits\n"
+        f"  effective average    : {config.effective_bits_per_weight:.2f} bits/weight"
+    )
 
 
 if __name__ == "__main__":

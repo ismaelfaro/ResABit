@@ -26,9 +26,9 @@ References:
 """
 
 import argparse
+import platform
 import sys
 import time
-import platform
 
 
 def _check_apple_silicon() -> None:

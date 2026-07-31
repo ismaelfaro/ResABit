@@ -37,3 +37,16 @@ logs/
 # Temp
 tmp/
 temp/
+
+# Experiment artifacts
+checkpoints/
+# The ledger is tracked; everything else under results/ is not. The README and
+# the preprint both claim every number traces to a row in it carrying its arm,
+# seed and git commit, and that claim is unverifiable if the file is missing.
+# It is ~1 MB of JSONL. Logs, pids and checkpoint blobs stay out.
+# Note the glob: `results/` alone excludes the directory itself, and git will
+# not re-include a file whose parent is excluded, so the negation below would
+# silently do nothing.
+results/*
+!results/ledger.jsonl
+.venv-mlx/
