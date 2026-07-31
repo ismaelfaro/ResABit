@@ -584,7 +584,39 @@ recovery is what the budget buys. And ternary against Part I's binary at the
 same architecture and budget is NLL 4.035 versus 5.655: the 0.6 extra
 stored bits per weight buy back 1.62 nats of the quantization gap.
 
-### 8.2 What the result does and does not say
+### 8.2 Budget context: where 1.23M tokens sits against BitNet and Bonsai
+
+The recovery budget is the axis on which this work is least comparable to
+its neighbours, so the comparison is tabulated rather than implied:
+
+| model | scheme | params | training/recovery tokens | vs ours |
+|---|---|---|---|---|
+| **ResABit grid (this work)** | ternary QAT recovery | 0.5B | **1.23M** | 1x |
+| ResABit ladder rung `[PENDING]` | ternary QAT recovery | 0.5B | 4.92M | 4x |
+| Bonsai 0.5B (deepgrove) | ternary, trained | 0.5B | 3.8B | ~3,100x |
+| BitNet b1.58 (paper) | ternary, trained | 0.7–3.9B | 100B | ~81,000x |
+| BitNet b1.58 2B4T | ternary, trained | 2B | 4T | ~3,300,000x |
+
+Two different quantities share this column and the distinction matters:
+BitNet and Bonsai train ternary models from scratch (or near it); we
+*recover* a pretrained FP32 model after ternarising it. Recovery is the
+cheaper regime and the only one this hardware supports — Bonsai's 3.8B
+tokens would take ~43 days per cell here. The table is context, not a
+claim of parity.
+
+What is actionable at this scale is the *trend*: a budget ladder on the same
+four cells (1.23M → 4.92M → 19.7M tokens, seed 0) measures whether the
+1.77x interaction grows, shrinks or holds as recovery deepens. If the
+diffusion penalty shrinks with budget, the 1.77x is a
+low-budget-transition artifact and Bonsai-scale recovery might erase it; if
+it holds or grows, the fragility is structural. The first rung beyond
+baseline is `[PENDING]` (running); the 19.7M rung is ~21 h of compute and
+queued behind its result. The grid's resume key includes the budget, and the
+summariser refuses to pool budgets — a 1200-step cell averaged into
+300-step statistics would be the determinism-replicates mistake wearing a
+different key.
+
+### 8.3 What the result does and does not say
 
 It says: at 0.5B and 1.23M recovery tokens, the masked-diffusion objective
 loses proportionally more of what it had than next-token prediction does,
@@ -662,7 +694,7 @@ Specific to Part II:
 - **Three seeds.** Enough for a sign-stable effect 56x its SE; not enough
   for a tight interval on the magnitude, and Part I is the standing reminder
   of what fewer seeds are worth.
-- **The candidate mechanisms are not separated** (§8.2). The design
+- **The candidate mechanisms are not separated** (§8.3). The design
   identifies *that* the diffusion objective loses more, not *why*.
 - **The headroom-share normalisation is a modelling choice.** It is the only
   quantity offered as commensurable across architectures, the raw nats are

@@ -206,14 +206,30 @@ def run_cell(
 
 
 def summarise() -> None:
-    """Quantization cost within each architecture, then the interaction."""
-    rows = [r for r in load_ledger()
-            if r["status"] != "crash" and r["stage"] == "full"]
+    """Quantization cost within each architecture, then the interaction.
+
+    Grouped by token budget. Budgets must never pool: a 1200-step cell
+    averaged into 300-step statistics would silently move every derived
+    quantity, which is the determinism-replicates-counted-as-seeds mistake
+    wearing a different key.
+    """
+    all_rows = [r for r in load_ledger()
+                if r["status"] != "crash" and r["stage"] == "full"]
+    budgets = sorted({r["train_config"]["steps"] for r in all_rows})
+    for steps in budgets:
+        rows = [r for r in all_rows if r["train_config"]["steps"] == steps]
+        tokens = steps * rows[0]["train_config"]["batch_size"] \
+            * rows[0]["train_config"]["grad_accum"] * rows[0]["train_config"]["seq_len"]
+        _summarise_budget(rows, steps, tokens)
+
+
+def _summarise_budget(rows: list[dict], steps: int, tokens: int) -> None:
     by_cell: dict[str, list[dict]] = {}
     for r in rows:
         by_cell.setdefault(r["cell"], []).append(r)
 
     print("\n" + "=" * 74)
+    print(f"budget: {steps} steps = {tokens/1e6:.2f}M tokens")
     print(f"{'cell':<15}{'n':>3}{'metric':>8}{'loss':>10}{'headroom':>11}")
     for name in ORDER:
         entries = by_cell.get(name, [])
@@ -291,6 +307,10 @@ def main() -> None:
                    help="skip (cell, seed) pairs already completed")
     p.add_argument("--backend", default="auto", choices=["auto", "mlx", "torch"],
                    help="training backend; auto picks MLX where it exists")
+    p.add_argument("--cells", nargs="+", default=list(ORDER),
+                   choices=list(ORDER),
+                   help="subset of cells, e.g. the contested pair for a "
+                        "budget ladder")
     args = p.parse_args()
 
     sys.stdout.reconfigure(line_buffering=True)
@@ -339,18 +359,22 @@ def main() -> None:
     windows = np.array(make_training_windows(train_tokens, train_cfg.seq_len))
     print(f"train windows : {len(windows)}")
 
-    plan = [(CELLS[name], seed) for seed in args.seeds for name in ORDER]
+    wanted = [name for name in ORDER if name in args.cells]
+    plan = [(CELLS[name], seed) for seed in args.seeds for name in wanted]
 
     if args.resume:
+        # The budget is part of the identity. A resume keyed on (cell, seed)
+        # alone would treat a finished 300-step cell as satisfying a
+        # 1200-step request and silently skip the longer run.
         done = {
-            (r["cell"], r["seed"])
+            (r["cell"], r["seed"], r["train_config"]["steps"])
             for r in load_ledger()
             if r["status"] != "crash" and r["stage"] == "full"
         }
-        kept = [(c, s) for c, s in plan if (c.name, s) not in done]
-        skipped = [f"{c.name}/{s}" for c, s in plan if (c.name, s) in done]
+        kept = [(c, s) for c, s in plan if (c.name, s, args.steps) not in done]
+        skipped = [f"{c.name}/{s}" for c, s in plan if (c.name, s, args.steps) in done]
         if skipped:
-            print("resuming; already in ledger: " + ", ".join(skipped))
+            print("resuming; already in ledger at this budget: " + ", ".join(skipped))
         plan = kept
 
     for cell, seed in plan:
