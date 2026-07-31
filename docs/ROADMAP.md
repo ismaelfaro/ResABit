@@ -150,6 +150,33 @@ And the training loss stays visibly noisy to the end (last-ten mean 4.567,
 individual steps between 3.19 and 5.52), which is the `1/t` weight doing what
 it is expected to do rather than instability.
 
+## Gating discipline: cheap signal before expensive confirmation
+
+The order that saves weeks, stated as policy because it was once followed by
+accident and once by design:
+
+1. **Mechanism check first** (does the knob move at all?). Part I logged the
+   gate trajectory inside the sweep rather than running one arm first — had
+   alpha stayed at zero, the full 2x2 would have been spent discovering a
+   no-op. That it moved was luck of `ALPHA_GAIN`, not correct ordering. Do
+   not repeat this: one arm, one seed, read the mechanism, then decide.
+2. **The contested pair at one seed** (is there a signal worth paying for?).
+   Part II did this right: the gating check (fp32 diffusion alone, ~1/12 of
+   the grid's cost) would have killed the experiment cheaply if the
+   adaptation had floored; grid seed 0 then showed +0.108 before seeds 1–2
+   were bought.
+3. **Full seeds only after signal.** Three seeds bought a 56x-SE verdict
+   precisely because the shape was already visible at one.
+
+**Applied to the budget ladder, decision rule fixed in advance:** the 19.7M
+rung (~21 h) and any additional ladder seeds are gated on the 4.92M rung at
+seed 0. If the interaction's headroom share at 4.92M stays within ±0.03 of
+the 1.23M value (+0.111), the effect is treated as budget-stable and the
+19.7M rung runs; if it shrinks by more than that, the interesting question
+becomes the decay curve and the 19.7M rung runs *with priority*; only if
+the 4.92M interaction collapses below +0.02 — smaller than Part I could
+even resolve — is the ladder stopped as answered.
+
 ## Status of the autoregressive work
 
 **Frozen, unpublished.** The 2x2 is complete and its result is a null: no
