@@ -592,10 +592,23 @@ its neighbours, so the comparison is tabulated rather than implied:
 | model | scheme | params | training/recovery tokens | vs ours |
 |---|---|---|---|---|
 | **ResABit grid (this work)** | ternary QAT recovery | 0.5B | **1.23M** | 1x |
-| ResABit ladder rung `[PENDING]` | ternary QAT recovery | 0.5B | 4.92M | 4x |
+| ResABit ladder rung 2 | ternary QAT recovery | 0.5B | 4.92M | 4x |
+| ResABit ladder rung 3 `[PENDING]` | ternary QAT recovery | 0.5B | 19.7M | 16x |
 | Bonsai 0.5B (deepgrove) | ternary, trained | 0.5B | 3.8B | ~3,100x |
 | BitNet b1.58 (paper) | ternary, trained | 0.7–3.9B | 100B | ~81,000x |
 | BitNet b1.58 2B4T | ternary, trained | 2B | 4T | ~3,300,000x |
+
+**Rung 2 is in, and the interaction is budget-stable.** At 4.92M tokens,
+seed 0: ternary's cost falls in both regimes as recovery deepens — the
+diffusion share drops 0.2607 → 0.1630 and the autoregressive share 0.1523 →
+0.0584 — but their *difference* barely moves: interaction +0.1046 against
++0.1084 at the same seed on the 1.23M budget, well inside the ±0.03 rule
+fixed in advance. Recovery buys both architectures back at similar absolute
+rates and the diffusion penalty persists; as a *ratio* the gap widens
+(1.7x → 2.8x) because the AR side approaches zero cost faster. Under the
+pre-registered rule this triggered the 19.7M rung, whose cells are
+`[PENDING]`. One seed per rung: the ladder measures a trend, and its error
+bars are the grid's, not its own.
 
 Two different quantities share this column and the distinction matters:
 BitNet and Bonsai train ternary models from scratch (or near it); we
