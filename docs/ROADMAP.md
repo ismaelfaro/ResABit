@@ -189,6 +189,41 @@ It stays in the repository as what validates the quantizer, the export path,
 and the measurement discipline the diffusion work inherits. It is prior work
 for this project, not a result this project is putting its name to.
 
+## Future improvements: unexploited MLX headroom
+
+Audited while rung 3 ran. The execution already uses what matters —
+`mx.fast.rms_norm`, `mx.fast.scaled_dot_product_attention`, the
+per-micro-batch `mx.eval` that keeps grad-accum graphs out of swap, GPU
+device confirmed live, 1.72x over PyTorch/MPS measured. Two real gains are
+deliberately left on the table:
+
+- **`mx.compile` on the training step** — typically 20–40% on MLX from
+  kernel fusion. Not used anywhere.
+- **`mx.fast.rope`** — RoPE is hand-rolled (outer + concat + rotate_half).
+
+Both change floating-point accumulation order, and three of this project's
+results lean on bitwise reproducibility (zero ledger drift across scripts,
+identical replicates, `fp32_ar` reproduced from three entry points).
+Flipping either mid-ladder would put old and new rungs in different numeric
+regimes — the silent-confound class this repository exists to catch.
+
+**Adoption plan, in order:**
+
+1. After rung 3 completes (GPU free — two concurrent GPU jobs starve on
+   this machine, measured), microbenchmark both on the real QAT step:
+   batch 2 x seq 512, ternary and FP32 arms, fwd+bwd wall time.
+2. If the combined win exceeds ~20%, adopt for *future* experiments only,
+   declaring a **reproducibility epoch break** in the ledger: a `numerics`
+   field on new rows, old and new numbers comparable through paired seeds,
+   never bitwise.
+3. Re-pin MLX/PyTorch parity under compile before any new experiment trusts
+   it (`tests/test_mlx_parity.py` thresholds re-measured, not assumed).
+
+Not adopted, with reasons already on record: batch 4 x accum 2 (same
+tokens, different RNG consumption — breaks seed pairing, see COLAB.md);
+bf16 masters (interacts with STE quantization thresholds; a measurement of
+its own, not a flag flip).
+
 ## What does not carry over
 
 The attention-residual ablation. That question is answered, it is null, and

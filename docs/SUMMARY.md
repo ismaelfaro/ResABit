@@ -165,5 +165,9 @@ port = PyTorch to 1e-5 on CPU; MLX trains (1.72x faster), PyTorch measures.
   a damage mode with no autoregressive analogue.
 - The PTQ/QAT regime boundary against arXiv:2604.20079's opposite ordering.
 - PIQA. Gain sweep on `ALPHA_GAIN`. Second-distribution held-out corpus.
+- MLX headroom: `mx.compile` (~20–40% typical) and `mx.fast.rope`, both
+  deferred because they change accumulation order and would break bitwise
+  comparability mid-experiment. Benchmark and epoch-break plan in
+  ROADMAP §Future improvements.
 - Publication of any of it — everything is frozen-local until you say
   otherwise.
