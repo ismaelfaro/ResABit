@@ -199,7 +199,10 @@ def live_processes(sample_seconds: float = 0.0) -> list[dict]:
     for line in out.stdout.splitlines():
         if not any(entry in line for entry in entrypoints):
             continue
-        if "/bin/zsh" in line or "dashboard.py" in line:
+        # The tmux launcher command also names the entrypoint, so it matches
+        # the filter and shows up as a second, idle "run" beside the real
+        # one -- which then breaks the single-orphan pid attachment below.
+        if any(w in line for w in ("/bin/zsh", "dashboard.py", "tmux ")):
             continue
         parts = line.split(None, 4)
         if len(parts) < 5:
@@ -452,18 +455,35 @@ def render(log: Path, sample_seconds: float = 0.0) -> str:
                 f"cpu {proc['cpu_time']}  rss {proc['rss_mb']:.0f} MB"
             )
             # Two rates, because they disagree and the disagreement is the
-            # diagnosis. A run starved for memory runs in bursts: sample it
+            # diagnosis. A run starved for memory works in bursts: sample it
             # during a burst and the instantaneous rate looks healthy while
-            # the lifetime average says it has done a tenth of the work.
-            # Reporting only the instantaneous figure once read "normal" for
-            # an arm running at a tenth speed.
-            lifetime = proc["cpu_seconds"] / max(_etime_seconds(proc["etime"]), 1)
-            lines.append(f"    cpu, lifetime average {lifetime*100:.1f}%")
+            # the average says it has done a tenth of the work.
+            #
+            # But wall-clock elapsed is the wrong denominator on a laptop.
+            # `caffeinate -i` blocks idle sleep and not lid-close sleep, so a
+            # perfectly healthy overnight run comes back with hours of
+            # elapsed and minutes of CPU. That read as STARVED three times in
+            # this project and was wrong every time.
+            #
+            # The training log carries its own clock -- each step line
+            # records seconds since the cell began -- and that clock does not
+            # advance while the machine is asleep. Divide by that instead,
+            # and the difference between the two denominators *is* the sleep.
+            wall = _etime_seconds(proc["etime"])
+            awake = arm.elapsed_s or wall
+            slept = max(0, wall - awake)
+            lifetime = proc["cpu_seconds"] / max(awake, 1)
+            lines.append(
+                f"    cpu, per training-second {lifetime*100:.1f}%"
+                + (f"  (machine slept ~{mmss(slept)} of {mmss(wall)} elapsed)"
+                   if slept > 300 else "")
+            )
             rate = proc.get("cpu_rate")
             if rate is not None:
                 lines.append(f"    cpu, sampled just now {rate*100:.1f}%")
 
-            # These runs are GPU-bound; a healthy arm averages roughly 10%.
+            # These runs are GPU-bound; a healthy arm averages roughly 10%
+            # of one core per second of actual training.
             if rate is not None and rate < 0.005 and lifetime < 0.02:
                 verdict = "STALLED — the CPU clock is not advancing"
             elif reference and lifetime < 0.04:
