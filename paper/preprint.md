@@ -2,7 +2,8 @@
 
 **Draft preprint. Every number is generated from a ledger
 (`results/ledger.jsonl`, `results/diffusion_ledger.jsonl`,
-`results/grid_ledger.jsonl`, `results/inference_bench.jsonl`); none is
+`results/grid_ledger.jsonl`, `results/inference_bench.jsonl`,
+`results/compounding_ledger.jsonl`); none is
 hand-entered. The placeholder policy — unmeasured quantities are marked
 `[PENDING]`, and there is no other kind of placeholder — held throughout;
 as of this draft every planned measurement is in and no marker remains.**
@@ -78,12 +79,16 @@ discipline Part II inherits: paired seeds against a measured noise floor
 (exactly zero — the pipeline is bitwise reproducible), failures kept in the
 ledger, and two methodological findings that transfer. Binarised
 transformers are numerically chaotic, with cross-backend disagreement
-compounding monotonically with depth — a diffusion model re-runs that forward
-up to dozens of times per block, and whether the chaos also compounds across
-denoising steps is an open question this protocol can now ask. And accuracy
-benchmarks floor at chance while divergence-based metrics keep resolving,
-which is why the grid's headline quantity is measured in nats and not
-accuracy points.
+compounding monotonically with depth — and the diffusion sampler adds a
+second amplification axis, now measured (§8.4): iterative commitment
+multiplies per-forward token disagreement by ~6–8x over 32 denoising steps
+in FP32 and ternary alike, actively heals it below a ~1% threshold, and
+ternary's role is to lower the weight perturbation needed to cross that
+threshold by two orders of magnitude, because depth-chaos converts a few
+thousand flipped levels into percent-scale per-forward divergence. And
+accuracy benchmarks floor at chance while divergence-based metrics keep
+resolving, which is why the grid's headline quantity is measured in nats
+and not accuracy points.
 
 ---
 
@@ -706,16 +711,60 @@ scale; what the grid measures is what a matched recovery budget buys back in
 each regime. Single seeds carry no error bars, and Part I documents at length
 what single-seed confidence is worth.
 
-**The open question the protocol can now ask.** Part I measured binarised
-stacks amplifying cross-backend perturbations monotonically with *depth* —
-and measured the one counterexample: FP16 scale rounding does not compound,
-because it moves magnitudes without flipping any sign bit, and only
-perturbations that cross the discontinuity amplify. A diffusion model feeds
-its own output back through the stack up to dozens of times per block.
-Whether discontinuity-crossing noise also compounds across *denoising steps*
-is a damage mode with no autoregressive analogue, nobody has measured it, and
-the instruments here — bitwise-reproducible pipeline, injected corruption,
-two pinned backends — are sufficient to do so.
+### 8.4 Cross-step compounding, measured
+
+Part I measured binarised stacks amplifying perturbations monotonically with
+*depth*, and the counterexample — noise that never flips a stored level is
+benign. A diffusion sampler adds the axis an autoregressive model does not
+have: it feeds its own committed tokens back through the stack. Measured, on
+the published `ternary_diff` and `fp32_diff` cells rebuilt exactly: twins
+whose master weights differ by relative Gaussian noise ε, frozen, then run
+greedily from identical prompts (8 blocks of 128 tokens, 32-token wikitext
+prefixes; greedy makes both trajectories deterministic, so every difference
+traces to the nudge). Disagreement is the fraction of filled positions where
+the twins commit different tokens. Ledger: `results/compounding_ledger.jsonl`.
+
+| arm | ε | per-forward argmax | S=1 | S=32 | growth |
+|---|---|---|---|---|---|
+| ternary | 1e-6 | 0.0000 | 0.0000 | 0.0000 | absorbed |
+| ternary | 1e-4 | 0.0534 | 0.0534 | 0.4219 | 7.9x |
+| ternary | 1e-3 | 0.0612 | 0.0612 | 0.3698 | 6.0x |
+| ternary | 1e-2 | 0.0781 | 0.0781 | 0.4792 | 6.1x |
+| fp32 | 1e-6 | 0.0000 | 0.0000 | 0.0000 | absorbed |
+| fp32 | 1e-4 | 0.0026 | 0.0026 | **0.0000** | **healed** |
+| fp32 | 1e-3 | 0.0143 | 0.0143 | 0.1172 | 8.2x |
+| fp32 | 1e-2 | 0.0729 | 0.0729 | 0.5755 | 7.9x |
+
+Three findings, one per column.
+
+**The feedback loop amplifies, and it is not a quantization phenomenon.**
+Wherever per-forward disagreement is nonzero, thirty-two denoising steps
+multiply it by ~6–8x — in the FP32 arm as much as the ternary one. Iterative
+commitment compounds its own errors; that is a property of the sampler, not
+of the weights.
+
+**What ternary changes is the entry price.** At ε = 1e-4, a nudge that flips
+just 7,260 of 308M stored levels (2.4e-5) produces 5.3% per-forward
+disagreement in the ternary arm — 20x the FP32 control's 0.26% — because
+depth-chaos (§5.4) converts level flips into token-scale divergence before
+the sampler ever sees it. The composition is the damage mode: quantization
+amplifies weight noise into per-forward disagreement, and the sampler
+multiplies whatever disagreement exists by ~7x. The ternary model reaches
+42% trajectory divergence at a perturbation two orders of magnitude smaller
+than the FP32 model needs.
+
+**Below a threshold, the trajectory heals.** The FP32 arm at ε = 1e-4
+(0.26% per forward) ends at exactly zero disagreement after 32 steps —
+later steps, conditioning on a majority of identical commitments, pull the
+stray ones back. Absorption is not just "no growth"; small enough divergence
+is actively corrected. The ternary arm at ε = 1e-6 sits in the same basin
+(every one of its 83 flipped levels absorbed by commitment margins). The
+sampler therefore has two regimes with a boundary somewhere below ~1%
+per-forward disagreement, and sub-2-bit quantization's real risk is that
+depth-chaos pushes an otherwise-benign weight perturbation across that
+boundary. A first run of this experiment at ε = 1e-6 alone concluded
+"absorbed" and was true but vacuous — the sweep exists because a flat curve
+with nothing to amplify answers no question.
 
 ## 9. Inference cost: what the two architectures pay per token
 
@@ -817,7 +866,7 @@ Specific to Part II:
   of an autoregressive model, not a diffusion model trained as one — the
   Dream/TESS-2 recipe at a tiny fraction of their budgets. Mask accuracy of
   0.27 clears the measurability bar; it is not a claim of a usable model.
-- **Cross-denoising-step error compounding is posed, not measured** (§8).
+- **Cross-denoising-step compounding is measured** (§8.4): the sampler multiplies per-forward disagreement ~6-8x in both regimes, heals it below a ~1% threshold, and ternary lowers the perturbation needed to cross that threshold by two orders of magnitude. One seed, one epsilon grid, greedy sampling only.
 
 ---
 
@@ -886,12 +935,13 @@ python run_grid.py --seeds 0 1 2 --resume      # the factorial
 ./run_ladder.sh 1200                           # budget ladder rungs (tmux-detached)
 ./run_ladder.sh 4800
 python bench_inference.py                      # §9 (refuses to run beside training)
+python run_step_compounding.py                 # §8.4 (epsilon sweep, ~1h)
 ```
 
 Every number traces to a ledger row carrying its arm or cell, seed, git
 commit and full training configuration: `results/ledger.jsonl` for Part I,
 `results/diffusion_ledger.jsonl` and `results/grid_ledger.jsonl` for
-Part II, `results/inference_bench.jsonl` for §9 (stamped with device, torch
+Part II, `results/inference_bench.jsonl` for §9 and `results/compounding_ledger.jsonl` for §8.4 (stamped with device, torch
 version and host instead of a training config). Failed and diverged runs
 are retained; plumbing runs are tagged `smoke` so no aggregate can pool
 them; ladder budgets are part of the resume key and are never pooled by the
