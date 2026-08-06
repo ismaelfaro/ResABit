@@ -2,8 +2,10 @@
 
 **Draft preprint. Every number is generated from a ledger
 (`results/ledger.jsonl`, `results/diffusion_ledger.jsonl`,
-`results/grid_ledger.jsonl`); none is hand-entered. Quantities not yet
-measured are marked `[PENDING]`, and there is no other kind of placeholder.**
+`results/grid_ledger.jsonl`, `results/inference_bench.jsonl`); none is
+hand-entered. The placeholder policy — unmeasured quantities are marked
+`[PENDING]`, and there is no other kind of placeholder — held throughout;
+as of this draft every planned measurement is in and no marker remains.**
 
 ---
 
@@ -42,6 +44,30 @@ is measurably more fragile under sub-2-bit weights than next-token
 prediction — the opposite ordering from the literature's one comparative
 PTQ datapoint at 2–4 bits, which makes the regime boundary the next
 question.
+
+A budget ladder (1.23M → 4.92M → 19.7M tokens, seed 0) bounds how far that
+holds. The interaction is budget-stable from 1x to 4x (+0.108 → +0.105,
+inside a ±0.03 rule fixed in advance) while both absolute costs fall — deeper
+recovery does not close the architecture gap, and as a ratio it widens. At
+16x the instrument itself breaks, informatively: ~8 epochs of the small
+recovery corpus and the FP32 autoregressive reference memorises it (train
+loss 0.03, validation NLL worse than at 1x), flipping ternary's apparent
+cost negative via regularisation, while both diffusion arms — for which
+random masking is data augmentation — pass through the same 8 epochs with
+train ≈ eval and a monotonically falling ternary share (0.261 → 0.163 →
+0.088). Extending the ladder needs a larger corpus before more compute.
+
+Inference cost is measured on the same hardware and split into what is
+implementation (this repository has no fused low-bit kernels, so its
+quantized paths lose to FP32 — stated, not implied away) and what is
+structure: the per-denoise-step cost of the diffusion model is flat, so
+uncached block diffusion beats KV-cached autoregressive decode whenever
+denoising steps are well under block length — 2.9x at 16 steps for a
+128-token block, crossover near 45 — and production diffusion LMs
+(DiffusionGemma: ≤48 steps per 256-token block) ship exactly inside that
+regime. There is no KV cache to amortise weight traffic, which is why
+sub-2-bit weights matter more for diffusion, and why the fragility measured
+here is a cost worth caring about.
 
 This work sits on a completed prior measurement: a 2x2 crossing {FP32, 1-bit}
 with a cross-layer attention residual on the autoregressive model (§Part I),
@@ -441,7 +467,7 @@ across implementations, not within one.
 
 ---
 
-# Part II — Ternary weights on a discrete diffusion model (in progress)
+# Part II — Ternary weights on a discrete diffusion model (completed)
 
 Part I answered its question and, in doing so, validated the instruments.
 Part II is the thesis: sub-2-bit weights on a model that generates by
@@ -618,7 +644,7 @@ share −0.0697). The rung-3 interaction (+0.158 nominal) is therefore
 **uninterpretable as quantization damage**: the headroom-share normalisation
 assumes a sane FP32 reference, and corpus exhaustion destroyed that
 reference on the AR side. This is the one-corpus limitation biting exactly
-where §9 predicted it would.
+where §10 predicted it would.
 
 The diffusion side survives the same 8 epochs untouched — train ≈ eval in
 both arms (3.61/3.35 FP32, 4.38/4.11 ternary), because random masking
@@ -644,14 +670,13 @@ claim of parity.
 What is actionable at this scale is the *trend*: a budget ladder on the same
 four cells (1.23M → 4.92M → 19.7M tokens, seed 0) measures whether the
 1.77x interaction grows, shrinks or holds as recovery deepens. If the
-diffusion penalty shrinks with budget, the 1.77x is a
-low-budget-transition artifact and Bonsai-scale recovery might erase it; if
-it holds or grows, the fragility is structural. The first rung beyond
-baseline is `[PENDING]` (running); the 19.7M rung is ~21 h of compute and
-queued behind its result. The grid's resume key includes the budget, and the
-summariser refuses to pool budgets — a 1200-step cell averaged into
-300-step statistics would be the determinism-replicates mistake wearing a
-different key.
+diffusion penalty shrank with budget, the 1.77x would be a
+low-budget-transition artifact that Bonsai-scale recovery might erase; if it
+holds, the fragility is structural. Both rungs beyond baseline are complete
+and the answer is below. An engineering note that protects the numbers: the
+grid's resume key includes the budget, and the summariser refuses to pool
+budgets — a 1200-step cell averaged into 300-step statistics would be the
+determinism-replicates mistake wearing a different key.
 
 ### 8.3 What the result does and does not say
 
@@ -692,7 +717,51 @@ is a damage mode with no autoregressive analogue, nobody has measured it, and
 the instruments here — bitwise-reproducible pipeline, injected corruption,
 two pinned backends — are sufficient to do so.
 
-## 9. Limitations
+## 9. Inference cost: what the two architectures pay per token
+
+Measured on the same hardware the models trained on (M5, MPS, 0.5B, real
+weights, medians over warm repeats with device sync at every clock read;
+raw rows in `results/inference_bench.jsonl`).
+
+**The implementation-bound part, stated first so it cannot be misread.**
+FP32 autoregressive decode runs 42.6 tok/s with a KV cache; every quantized
+path in this repository lands at 4.8–6.0. That ordering is expected and is a
+property of the implementation, not the formats: the dequant path rebuilds
+the FP32 matrix on every forward and the INT8 path loops one GEMM per group
+of 128. The memory-bandwidth win that motivates sub-2-bit weights is
+delivered by fused kernels this repository does not have (BitNet.cpp,
+PrismML's Metal kernels). No speed number here says anything about ternary
+deployment.
+
+**The structural part, which survives the missing kernels.** A diffusion
+model pays S uncached full forwards over a block of L tokens; an
+autoregressive model pays L cached forwards. Measured, the per-denoise-step
+cost is flat — ~0.067 s for a 128-token block whether the sampler takes 1
+step or 32 — so the diffusion decode rate is (block length / steps) x a
+constant, and it beats cached AR decode whenever S ≪ L:
+
+| denoise steps (block 128, FP32) | tok/s | vs AR decode |
+|---|---|---|
+| 1 | 1885.8 | 44.3x |
+| 8 | 238.7 | 5.6x |
+| 16 | 122.6 | 2.9x |
+| 32 | 60.0 | 1.4x |
+| ~45 (extrapolated) | ~42 | crossover |
+
+Two readings. First, this quantifies §8's motivation: diffusion LMs have no
+KV cache to amortise, so *weight* traffic is paid per step — which is
+exactly why sub-2-bit weights matter more there, and why the ternary
+fragility measured in §8.1 is a cost worth caring about. Second,
+DiffusionGemma's shipped design point — at most 48 denoising steps per
+256-token block — sits precisely in the S ≪ L regime this table maps, which
+is independent corroboration that the regime this measurement targets is
+the one production diffusion LMs occupy.
+
+The ternary diffusion path (16.1 tok/s at 32 steps against FP32's 60.0)
+shows the same 3–4x implementation penalty as the AR side, for the same
+kernel reasons.
+
+## 10. Limitations
 
 Shared by both parts:
 
@@ -707,7 +776,11 @@ Shared by both parts:
 - **One recovery corpus** (wikitext-2), which is narrow — and it is also the
   corpus every reported perplexity is measured on. There is no held-out
   perplexity from a second distribution, so none of the perplexity numbers
-  here is out-of-distribution.
+  here is out-of-distribution. **This limitation is now measured, not
+  hypothetical**: at 16x budget (~8 epochs) it destroyed the ladder's AR
+  reference outright (§8.2), while the diffusion arms — for which random
+  masking is data augmentation — sailed through the same 8 epochs with
+  train ≈ eval.
 - **Weight-only quantization**; activations remain FP32. Activation outliers
   are the documented blocker addressed by BitNet a4.8 and BitNet v2.
 - **Five seeds on the 1-bit pair, one on each FP32 arm.** Enough to establish
@@ -748,7 +821,7 @@ Specific to Part II:
 
 ---
 
-## 10. Related work
+## 11. Related work
 
 **Extreme-quantization LLMs.** BitNet [7] and BitNet b1.58 [8]; BitNet a4.8
 and v2 for activation quantization; the 2B4T report [9] for a fully trained
@@ -810,13 +883,23 @@ python report.py
 # Part II
 python run_diffusion_check.py --steps 300      # the gating check
 python run_grid.py --seeds 0 1 2 --resume      # the factorial
+./run_ladder.sh 1200                           # budget ladder rungs (tmux-detached)
+./run_ladder.sh 4800
+python bench_inference.py                      # §9 (refuses to run beside training)
 ```
 
 Every number traces to a ledger row carrying its arm or cell, seed, git
 commit and full training configuration: `results/ledger.jsonl` for Part I,
 `results/diffusion_ledger.jsonl` and `results/grid_ledger.jsonl` for
-Part II. Failed and diverged runs are retained; plumbing runs are tagged
-`smoke` so no aggregate can pool them. The pipeline is bitwise reproducible
-on this machine — the gating check's NELBO reproduced to the digit when the
-grid re-ran the same cell from a different script — so any cell can be
-rebuilt exactly from its ledger row.
+Part II, `results/inference_bench.jsonl` for §9 (stamped with device, torch
+version and host instead of a training config). Failed and diverged runs
+are retained; plumbing runs are tagged `smoke` so no aggregate can pool
+them; ladder budgets are part of the resume key and are never pooled by the
+summariser. The pipeline is bitwise reproducible on this machine — the
+gating check's NELBO reproduced to the digit when the grid re-ran the same
+cell from a different script, and training is restartable at cell
+granularity because the ledger is the checkpoint. Training runs on MLX on
+Apple Silicon and on a pure-PyTorch twin elsewhere (`src/trainer.py`); the
+two consume the same seeded batch order and corruption masks, so runs pair
+across backends but do not reproduce each other bitwise, and every ledger
+row records its backend.
