@@ -593,22 +593,46 @@ its neighbours, so the comparison is tabulated rather than implied:
 |---|---|---|---|---|
 | **ResABit grid (this work)** | ternary QAT recovery | 0.5B | **1.23M** | 1x |
 | ResABit ladder rung 2 | ternary QAT recovery | 0.5B | 4.92M | 4x |
-| ResABit ladder rung 3 `[PENDING]` | ternary QAT recovery | 0.5B | 19.7M | 16x |
+| ResABit ladder rung 3 | ternary QAT recovery | 0.5B | 19.7M | 16x |
 | Bonsai 0.5B (deepgrove) | ternary, trained | 0.5B | 3.8B | ~3,100x |
 | BitNet b1.58 (paper) | ternary, trained | 0.7–3.9B | 100B | ~81,000x |
 | BitNet b1.58 2B4T | ternary, trained | 2B | 4T | ~3,300,000x |
 
-**Rung 2 is in, and the interaction is budget-stable.** At 4.92M tokens,
-seed 0: ternary's cost falls in both regimes as recovery deepens — the
-diffusion share drops 0.2607 → 0.1630 and the autoregressive share 0.1523 →
-0.0584 — but their *difference* barely moves: interaction +0.1046 against
-+0.1084 at the same seed on the 1.23M budget, well inside the ±0.03 rule
-fixed in advance. Recovery buys both architectures back at similar absolute
-rates and the diffusion penalty persists; as a *ratio* the gap widens
-(1.7x → 2.8x) because the AR side approaches zero cost faster. Under the
-pre-registered rule this triggered the 19.7M rung, whose cells are
-`[PENDING]`. One seed per rung: the ladder measures a trend, and its error
-bars are the grid's, not its own.
+**Rung 2: the interaction is budget-stable.** At 4.92M tokens, seed 0:
+ternary's cost falls in both regimes as recovery deepens — the diffusion
+share drops 0.2607 → 0.1630 and the autoregressive share 0.1523 → 0.0584 —
+but their *difference* barely moves: interaction +0.1046 against +0.1084 at
+the same seed on the 1.23M budget, well inside the ±0.03 rule fixed in
+advance. Recovery buys both architectures back at similar absolute rates
+and the diffusion penalty persists; as a *ratio* the gap widens (1.7x →
+2.8x) because the AR side approaches zero cost faster. Under the
+pre-registered rule this triggered the 19.7M rung.
+
+**Rung 3: the instrument breaks on the AR side, and the break is the
+finding.** 19.7M tokens is ~8 epochs of wikitext-2's ~2.5M-token train
+split, and the FP32 autoregressive arm memorises it: final train loss
+**0.0302** against a validation NLL of 4.8898 — worse than its own 1x-budget
+value of 2.6909. The ternary twin *cannot* memorise as hard (train 0.7774)
+and generalises better, so the "cost of ternary" flips sign (−0.49 nats,
+share −0.0697). The rung-3 interaction (+0.158 nominal) is therefore
+**uninterpretable as quantization damage**: the headroom-share normalisation
+assumes a sane FP32 reference, and corpus exhaustion destroyed that
+reference on the AR side. This is the one-corpus limitation biting exactly
+where §9 predicted it would.
+
+The diffusion side survives the same 8 epochs untouched — train ≈ eval in
+both arms (3.61/3.35 FP32, 4.38/4.11 ternary), because random masking
+presents a fresh task every epoch and acts as data augmentation. On its own
+axis the diffusion ternary share falls monotonically with budget: 0.2607 →
+0.1630 → 0.0884.
+
+Ladder verdict, stated within its limits: the interaction is
+budget-stable from 1x to 4x; at 16x the cross-architecture comparison
+cannot be computed on this corpus, and extending the ladder requires a
+larger recovery corpus before it requires more compute. The AR-side sign
+flip is the familiar quantization-as-regularisation effect and is reported
+as an artifact of corpus exhaustion, not as a deployable claim about
+ternary models.
 
 Two different quantities share this column and the distinction matters:
 BitNet and Bonsai train ternary models from scratch (or near it); we

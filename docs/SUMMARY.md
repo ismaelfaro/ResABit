@@ -76,6 +76,27 @@ Supporting results:
 - **Ternary vs binary**, same AR architecture and budget: NLL 4.035 vs
   5.655. The 0.6 extra stored bits buy back 1.62 nats.
 
+## The budget ladder (seed 0, one seed per rung)
+
+| rung | tokens | diffusion share | AR share | interaction |
+|---|---|---|---|---|
+| 1 | 1.23M (~0.5 epoch) | 0.2607 | 0.1523 | +0.108 |
+| 2 | 4.92M (~2 epochs) | 0.1630 | 0.0584 | +0.105 |
+| 3 | 19.7M (~8 epochs) | 0.0884 | −0.0697 ⚠ | not computable |
+
+Rungs 1→2: the interaction is **budget-stable** (inside the ±0.03 rule fixed
+in advance) while both absolute costs fall — recovery does not close the
+architecture gap, and as a ratio it widens (1.7x → 2.8x).
+
+Rung 3 **breaks the instrument on the AR side, and the break is the
+finding**: 8 epochs of a 2.5M-token corpus and the FP32 AR arm memorises it
+(train loss 0.0302, validation NLL 4.89 — worse than at 1x budget). The
+ternary twin cannot memorise as hard and generalises better, flipping the
+"cost" negative — quantization-as-regularisation, reported as a corpus-
+exhaustion artifact, not a deployable claim. The diffusion side survives
+untouched (train ≈ eval both arms): random masking is data augmentation.
+Extending the ladder needs a bigger recovery corpus before more compute.
+
 ## Part I — the prior experiment (frozen, unpublished)
 
 A 2x2 crossing {FP32, 1-bit binary} with a cross-layer attention residual
