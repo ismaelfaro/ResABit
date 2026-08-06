@@ -106,32 +106,36 @@ def train_cell(quantize: bool, cfg: TrainConfig, windows, device):
         return model, config
 
 
-def perturbed_twin(model, config, epsilon: float, seed: int, device):
-    """Same masters nudged by relative Gaussian noise, then frozen alongside."""
+def perturbed_twin(masters: dict, config, epsilon: float, seed: int, device):
+    """Fresh model from saved masters nudged by relative Gaussian noise.
+
+    Built from a CPU copy of the trained masters rather than from the
+    reference model, because freezing deletes the masters -- and the sweep
+    needs them once per epsilon.
+    """
     from src.model import ResABitForCausalLM
 
     twin = ResABitForCausalLM(config)
-    source = dict(model.named_parameters())
     generator = torch.Generator().manual_seed(seed)
     with torch.no_grad():
         for name, param in twin.named_parameters():
             if name == "lm_head.weight" and config.tie_word_embeddings:
                 continue
-            value = source[name]
+            value = masters[name]
             noise = torch.randn(value.shape, generator=generator) \
-                * epsilon * value.detach().abs().cpu()
-            param.copy_(value.detach().cpu() + noise)
+                * epsilon * value.abs()
+            param.copy_(value + noise)
+    if config.quantize_linear:
+        quantize_model_weights(twin)
     return twin.to(device).eval()
 
 
-def freeze_and_count_flips(a, b) -> dict:
-    """Freeze both models; count stored ternary levels that differ."""
-    quantize_model_weights(a)
-    quantize_model_weights(b)
+def count_flips(a, b) -> dict:
+    """Stored ternary levels that differ between two frozen models."""
     flipped = total = 0
     for ma, mb in zip(a.modules(), b.modules()):
         if isinstance(ma, LowBitLinear) and ma.is_quantized:
-            la, lb = ma._levels(), mb._levels()
+            la, lb = ma._levels().cpu(), mb._levels().cpu()
             flipped += int((la != lb).sum())
             total += la.numel()
     return {"flipped_levels": flipped, "total_levels": total,
@@ -159,7 +163,13 @@ def trajectory_disagreement(a, b, prompts, mask, steps: int) -> float:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--steps-list", type=int, nargs="+", default=[1, 2, 4, 8, 16, 32])
-    p.add_argument("--epsilon", type=float, default=1e-6)
+    # A sweep, not a point. At 1e-6 the trained model's commitment margins
+    # absorb every flip (measured: zero argmax changes, so the trajectory
+    # has nothing to amplify and flatness is vacuous). The larger epsilons
+    # exist to force nonzero per-forward disagreement, which is the only
+    # regime where "does the feedback loop grow it?" is actually asked.
+    p.add_argument("--epsilons", type=float, nargs="+",
+                   default=[1e-6, 1e-4, 1e-3, 1e-2])
     p.add_argument("--blocks", type=int, default=8)
     p.add_argument("--block-len", type=int, default=128)
     p.add_argument("--prefix-len", type=int, default=32,
@@ -173,7 +183,7 @@ def main() -> None:
     train_cfg = TrainConfig(steps=args.train_steps, seed=args.seed)
 
     print(f"host    : {platform.platform()}  device {device}")
-    print(f"epsilon : {args.epsilon:g} relative, seed {args.seed}")
+    print(f"epsilons: {args.epsilons} relative, seed {args.seed}")
     print(f"blocks  : {args.blocks} x {args.block_len} tok "
           f"({args.prefix_len} unmasked prefix)")
 
@@ -189,68 +199,90 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
     offsets = rng.integers(0, val_tokens.numel() - args.prefix_len, args.blocks)
 
-    results = {}
+    LEDGER.parent.mkdir(exist_ok=True)
+    stage = "smoke" if args.train_steps < 50 else "full"
+    stamp = {
+        "stage": stage, "commit": git_commit(), "device": str(device),
+        "seed": args.seed, "blocks": args.blocks,
+        "block_len": args.block_len, "prefix_len": args.prefix_len,
+        "train_config": asdict(train_cfg),
+    }
+
+    prompts_cpu = None
+    summary = []
     for label, quantize in (("ternary", True), ("fp32_control", False)):
         print(f"\n=== {label}: retraining the published cell ===")
-        started = time.time()
         model, config = train_cell(quantize, train_cfg, windows, device)
-        twin = perturbed_twin(model, config, args.epsilon, args.seed + 1, device)
-
-        flips = None
+        # Masters saved before freezing: freezing deletes them, and every
+        # epsilon in the sweep needs a fresh twin built from them.
+        masters = {n: p.detach().cpu().clone() for n, p in model.named_parameters()}
         if quantize:
-            flips = freeze_and_count_flips(model, twin)
-            print(f"  levels flipped by epsilon: {flips['flipped_levels']} "
-                  f"of {flips['total_levels']} ({flips['flip_fraction']:.2e})")
+            quantize_model_weights(model)
 
-        prompts = torch.full((args.blocks, args.block_len),
-                             config.mask_token_id, device=device)
-        for i, off in enumerate(offsets):
-            prompts[i, :args.prefix_len] = val_tokens[off:off + args.prefix_len]
+        if prompts_cpu is None:
+            prompts_cpu = torch.full((args.blocks, args.block_len),
+                                     config.mask_token_id)
+            for i, off in enumerate(offsets):
+                prompts_cpu[i, :args.prefix_len] = val_tokens[off:off + args.prefix_len]
+        prompts = prompts_cpu.to(device)
         fill_mask = prompts == config.mask_token_id
 
-        baseline = per_forward_divergence(model, twin, prompts, config.mask_token_id)
-        print(f"  per-forward: logit delta {baseline['logit_rel_delta']:.2e}  "
-              f"argmax disagreement {baseline['argmax_disagreement']:.4f}")
+        for epsilon in args.epsilons:
+            started = time.time()
+            twin = perturbed_twin(masters, config, epsilon, args.seed + 1, device)
+            flips = count_flips(model, twin) if quantize else None
+            if flips:
+                print(f"  eps {epsilon:g}: {flips['flipped_levels']} of "
+                      f"{flips['total_levels']} levels flipped "
+                      f"({flips['flip_fraction']:.2e})")
 
-        curve = {}
-        for steps in args.steps_list:
-            d = trajectory_disagreement(model, twin, prompts, fill_mask, steps)
-            curve[steps] = d
-            print(f"  S={steps:>2}: token disagreement {d:.4f}")
+            baseline = per_forward_divergence(model, twin, prompts,
+                                              config.mask_token_id)
+            print(f"  eps {epsilon:g}: per-forward logit delta "
+                  f"{baseline['logit_rel_delta']:.2e}  argmax disagreement "
+                  f"{baseline['argmax_disagreement']:.4f}")
 
-        results[label] = {
-            "flips": flips, "per_forward": baseline,
-            "disagreement_by_steps": curve,
-            "wall_seconds": round(time.time() - started, 1),
-        }
-        del model, twin
+            curve = {}
+            for steps in args.steps_list:
+                d = trajectory_disagreement(model, twin, prompts, fill_mask, steps)
+                curve[steps] = d
+                print(f"    S={steps:>2}: token disagreement {d:.4f}")
+
+            record = {
+                **stamp, "arm": label, "epsilon": epsilon,
+                "flips": flips, "per_forward": baseline,
+                "disagreement_by_steps": curve,
+                "wall_seconds": round(time.time() - started, 1),
+            }
+            # One row per (arm, epsilon), written the moment it exists. The
+            # first run of this experiment lost its completed ternary arm to
+            # an interrupt because the ledger write waited for the end.
+            with LEDGER.open("a") as f:
+                f.write(json.dumps(record) + "\n")
+            summary.append(record)
+            del twin
+            if device.type == "mps":
+                torch.mps.empty_cache()
+
+        del model
         if device.type == "mps":
             torch.mps.empty_cache()
 
-    LEDGER.parent.mkdir(exist_ok=True)
-    with LEDGER.open("a") as f:
-        f.write(json.dumps({
-            "stage": "smoke" if args.train_steps < 50 else "full",
-            "commit": git_commit(), "device": str(device),
-            "epsilon": args.epsilon, "seed": args.seed,
-            "blocks": args.blocks, "block_len": args.block_len,
-            "prefix_len": args.prefix_len,
-            "train_config": asdict(train_cfg),
-            "results": results,
-        }) + "\n")
-    print(f"\nappended to {LEDGER}")
-
-    t = results["ternary"]["disagreement_by_steps"]
-    lo, hi = t[min(t)], t[max(t)]
-    base = results["ternary"]["per_forward"]["argmax_disagreement"]
-    print(f"\nternary: per-forward argmax disagreement {base:.4f}; "
-          f"trajectory {lo:.4f} at S={min(t)} -> {hi:.4f} at S={max(t)}")
-    if hi > 2 * max(lo, 1e-9):
-        print("READING: disagreement grows with steps -- the feedback loop "
-              "amplifies, a damage mode with no autoregressive analogue.")
-    else:
-        print("READING: disagreement does not grow with steps -- commitment "
-              "absorbs the noise; the chaos is per-forward only.")
+    print(f"\nappended {len(summary)} rows to {LEDGER}\n")
+    print(f"{'arm':<14}{'epsilon':>9}{'fwd argmax':>12}{'S=1':>8}"
+          f"{'S=max':>8}{'growth':>8}")
+    for r in summary:
+        curve = r["disagreement_by_steps"]
+        first, last = curve[min(curve)], curve[max(curve)]
+        base = r["per_forward"]["argmax_disagreement"]
+        if last < 1e-9:
+            growth = "—"
+        elif first < 1e-9:
+            growth = "from 0"      # feedback created what one pass did not show
+        else:
+            growth = f"{last / first:.1f}x"
+        print(f"{r['arm']:<14}{r['epsilon']:>9g}{base:>12.4f}"
+              f"{first:>8.4f}{last:>8.4f}{growth:>8}")
 
 
 if __name__ == "__main__":
