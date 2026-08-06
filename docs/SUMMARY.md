@@ -97,6 +97,25 @@ exhaustion artifact, not a deployable claim. The diffusion side survives
 untouched (train ≈ eval both arms): random masking is data augmentation.
 Extending the ladder needs a bigger recovery corpus before more compute.
 
+## Inference speed (MPS, 0.5B, this repo's paths — no fused kernels)
+
+| variant | tok/s |
+|---|---|
+| FP32 AR, KV-cached decode | 42.6 |
+| binary/ternary AR (dequant or INT8 paths) | 4.8–6.0 |
+| FP32 diffusion, block 128 @ 8 steps | 238.7 |
+| FP32 diffusion, block 128 @ 32 steps | 60.0 |
+| ternary diffusion, block 128 @ 32 steps | 16.1 |
+
+Quantized paths losing to FP32 is expected and stated up front: dequant
+rebuilds the matrix per forward, INT8 loops per group; the bandwidth win
+belongs to fused kernels this repo does not have. The transferable result is
+structural: **per-denoise-step cost is flat (~0.067 s) regardless of step
+count, so uncached diffusion beats cached AR decode whenever steps ≪ block
+length** — 2.9x faster at 16 steps, 1.4x at 32, crossover ≈ 45 steps for a
+128-token block. DiffusionGemma's ≤48-steps-per-256-token-block design point
+sits exactly on that tradeoff. Raw rows: `results/inference_bench.jsonl`.
+
 ## Part I — the prior experiment (frozen, unpublished)
 
 A 2x2 crossing {FP32, 1-bit binary} with a cross-layer attention residual

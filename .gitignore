@@ -49,4 +49,5 @@ checkpoints/
 # silently do nothing.
 results/*
 !results/ledger.jsonl
+!results/inference_bench.jsonl
 .venv-mlx/
