@@ -189,6 +189,56 @@ It stays in the repository as what validates the quantizer, the export path,
 and the measurement discipline the diffusion work inherits. It is prior work
 for this project, not a result this project is putting its name to.
 
+## Evidence-backed next steps: storage and inference speed
+
+Surveyed 2026-08-08, mapped to this repository's measured pain points, in
+descending leverage.
+
+**1. The embedding table is 94% of the file (storage).** Our checkpoint is
+666 MB: 43 MB of ternary projections, 623 MB of FP32 embeddings — the
+honest-accounting section has said so from the start, and the literature
+now has a direct answer. CARVQ (arXiv:2510.12721) compresses LLM embeddings
+post-training to ~1.6 bits with a corrective adaptor and group residual
+vector quantization, no special hardware; plain INT8 is a 4x cut with
+near-zero risk. Even FP16 halves the file. Ladder of effort:
+FP16 (an afternoon, ~350 MB) → INT8 (~200 MB) → CARVQ-style (~75 MB,
+whole checkpoint under 120 MB). This is the only change that moves
+checkpoint size materially, because the projections are already 1.725 bits.
+
+**2. Export to bitnet.cpp / T-MAC instead of writing Metal kernels
+(speed).** Our INT8 path (one GEMM per group of 128) is exactly the shape
+bitnet.cpp's I2_S kernel (arXiv:2502.11880, ACL 2025) implements fused and
+losslessly — up to 6.25x over full precision on edge CPUs — and T-MAC's
+lookup-table mpGEMM (EuroSys 2025) reaches 71 tok/s for BitNet-3B on an
+M2-Ultra, 4x over llama.cpp. Q1_58's {−1,0,+1} with absmean group scales
+maps onto I2_S almost term for term. A GGUF export of the AR ternary arm
+buys measured fused-kernel speed without writing a line of Metal, and would
+replace §9's "implementation-bound" caveat with a real number.
+
+**3. Approximate KV caching across denoising steps (diffusion speed).**
+§9 measured the flat per-step cost that makes diffusion decode scale with
+S/L; the 2025–26 dLLM literature attacks exactly that constant:
+Fast-dLLM's block-wise approximate KV cache plus parallel decoding
+(arXiv:2505.22618, up to 27.6x throughput), dKV-Cache's one-step-delayed
+caching, dLLM-Cache's prompt/response split frequencies
+(arXiv:2506.06295), d2Cache's dual adaptive scheme (arXiv:2509.23094).
+All exploit the same observation: KV states are near-stable across adjacent
+denoising steps, so caching is a *deliberate approximation*.
+
+**This repository already owns the safety criterion those methods need.**
+§8.4 measured the sampler's two regimes: per-forward disagreement below
+~1% is actively healed by later steps; above it, amplified 6–8x. An
+approximate cache injects exactly per-forward perturbation, so the healing
+threshold is a principled bound on how aggressive caching may be — and on
+the ternary model that bound is reached at 20x smaller perturbations than
+FP32. Measuring "how much cache staleness before the trajectory crosses the
+healing boundary, FP32 vs ternary" is a novel experiment that composes two
+things already built here, and nobody has published it.
+
+**4. Sub-1.6-bit packing (storage, marginal).** The trit packer stores
+1.6 bits against the log2(3) = 1.585 floor; entropy coding the trit stream
+could close most of that 1%. Not worth the complexity until items 1–3 land.
+
 ## Future improvements: unexploited MLX headroom
 
 Audited while rung 3 ran. The execution already uses what matters —

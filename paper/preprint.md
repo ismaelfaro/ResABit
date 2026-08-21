@@ -899,6 +899,31 @@ existing compensation designs.
 
 ---
 
+## Conclusion
+
+Four measurements, one arc. A masked diffusion language model adapted from
+an autoregressive base loses a 1.77x larger share of its capability to
+ternary quantization than the autoregressive twin does (+0.111 in headroom
+share, 56x its paired SE), and the gap is budget-stable as far as the
+recovery corpus can carry the comparison. The mechanism has a measured
+signature: quantization's depth-chaos converts a few thousand flipped
+levels into percent-scale per-forward token disagreement, and the diffusion
+sampler — which has no autoregressive analogue — multiplies whatever
+disagreement exists by ~6–8x across denoising steps, while actively healing
+divergence below a ~1% threshold. And the same structural fact that makes
+diffusion fragile makes sub-2-bit weights more valuable there: with no KV
+cache, weight traffic is paid on every denoising step, and uncached block
+diffusion beats cached autoregressive decode precisely in the
+steps-below-block-length regime production diffusion LMs ship in.
+
+The instrument is the other contribution. One protocol returned a null at
+1.2x its standard error (Part I), a positive at 56x (Part II), an
+informative self-breakage (the ladder's corpus exhaustion), and a
+prediction of its author's overturned by measurement (the frozen-path
+8 micronats). A pipeline that is bitwise reproducible across scripts, that
+ledgers failures and tags plumbing, and that fixes its decision rules
+before its results exist, is what let those four outcomes be told apart.
+
 ## References
 
 [1] Liu et al. Bi-Real Net. ECCV 2018.
