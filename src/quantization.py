@@ -420,7 +420,17 @@ class LowBitLinear(nn.Module):
         # base-3 bytes as bit fields: it loads clean and every weight is
         # wrong.
         code = state_dict.get(prefix + "scheme_code")
-        if code is not None:
+        if code is None:
+            # Checkpoints exported before the ternary scheme existed carry no
+            # scheme_code; they are q1_0 by definition -- it was the only
+            # scheme. Inject the default rather than letting the buffer count
+            # as missing, so the strict loader stays strict about everything
+            # that could actually be ambiguous.
+            state_dict[prefix + "scheme_code"] = torch.tensor(
+                _SCHEME_CODES["q1_0"], dtype=torch.uint8
+            )
+            self.scheme = "q1_0"
+        else:
             name = _SCHEME_NAMES.get(int(code.item()))
             if name is None:
                 error_msgs.append(
