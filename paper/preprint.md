@@ -91,7 +91,8 @@ transformers are numerically chaotic, with cross-backend disagreement
 compounding monotonically with depth — and the diffusion sampler adds a
 second amplification axis, now measured (§8.4): iterative commitment
 multiplies per-forward token disagreement by ~6–8x over 32 denoising steps
-in FP32 and ternary alike, actively heals it below a ~1% threshold, and
+in FP32 and ternary alike, actively heals it below a threshold bracketed
+at 0.3–1.4% per-forward disagreement, and
 ternary's role is to lower the weight perturbation needed to cross that
 threshold by two orders of magnitude, because depth-chaos converts a few
 thousand flipped levels into percent-scale per-forward divergence. And
@@ -612,9 +613,10 @@ max-entropy member is used because it is the only one requiring no fitted
 reference.
 
 Matched budget means matched *presented* tokens: 1,228,800 per cell. The
-diffusion arms compute loss only on masked positions — 616,449 supervised
-positions at seed 0, about half — so the two architectures receive
-different supervision per step. The 2x2 differences this out of the
+diffusion arms compute loss only on masked positions — about half: a
+faithful replay of the mask RNG contract gives 634,731 of 1,228,800
+presented positions at seed 0 (the per-run count is not ledgered) — so the
+two architectures receive different supervision per step. The 2x2 differences this out of the
 interaction (both diffusion cells see it identically), but the
 per-architecture shares inherit it, one more reason the shares are read as
 within-architecture quantities. The evaluations also differ in extent: AR
@@ -643,8 +645,8 @@ Per-seed paired interaction: +0.1084, +0.1153, +0.1105 — the sign never
 moves. Mean **+0.1114**, paired SE **0.0020**: 54x the standard error at
 full precision (0.111408/0.002048; earlier drafts printed "56x", the
 quotient of the two rounded figures). The grid script's own console prints
-the more conservative unpaired Welch SE, 0.0040 — 28x. Both conventions,
-and both are emitted by `verify_numbers.py`, clear the same 2 SE rule
+the more conservative unpaired Welch SE, 0.0040 — 28x. Both conventions
+are emitted by `verify_numbers.py`, and both clear the same 2 SE rule
 Part I's null sat inside by an order of magnitude.
 
 **Ternary quantization costs the diffusion model a 1.77x larger share of its
@@ -727,20 +729,21 @@ Two different quantities share this column and the distinction matters:
 BitNet and Bonsai train ternary models from scratch (or near it); we
 *recover* a pretrained FP32 model after ternarising it. Recovery is the
 cheaper regime and the only one this hardware supports — Bonsai's 3.8B
-tokens would take 40–44 days per FP32 cell at measured throughput, and
-51–78 days for the slower ternary cells. The table is context, not a
-claim of parity.
+tokens would take 33–43 days per FP32 cell at base-budget ledgered
+throughputs, and 51–78 days for the slower ternary cells (the 4x-budget
+ternary diffusion rung ran slower still, ~89 days at its measured rate).
+The table is context, not a claim of parity.
 
-What is actionable at this scale is the *trend*: a budget ladder on the same
-four cells (1.23M → 4.92M → 19.7M tokens, seed 0) measures whether the
-1.77x interaction grows, shrinks or holds as recovery deepens. If the
-diffusion penalty shrank with budget, the 1.77x would be a
-low-budget-transition artifact that Bonsai-scale recovery might erase; if it
-holds, the fragility is structural. Both rungs beyond baseline are complete
-and the answer is below. An engineering note that protects the numbers: the
-grid's resume key includes the budget, and the summariser refuses to pool
-budgets — a 1200-step cell averaged into 300-step statistics would be the
-determinism-replicates mistake wearing a different key.
+The ladder above was the pre-registered answer to the question this table
+raises: whether the gap is a low-budget-transition artifact that
+Bonsai-scale recovery might erase, or structural. Rungs 2 and 3 answered it
+within this corpus's limits — the *interaction* holds (+0.108 → +0.105)
+while the share *ratio* widens (1.7x → 2.8x); the two are different
+quantities and only the first was the pre-registered criterion. An
+engineering note that protects the numbers: the grid's resume key includes
+the budget, and the summariser refuses to pool budgets — a 1200-step cell
+averaged into 300-step statistics would be the determinism-replicates
+mistake wearing a different key.
 
 ### 8.3 What the result does and does not say
 
@@ -993,9 +996,10 @@ existing compensation designs.
 Four measurements, one arc. A masked diffusion language model adapted from
 an autoregressive base loses a 1.77x larger share of its capability to
 ternary quantization than the autoregressive twin does (+0.111 in headroom
-share, 54x its paired SE; measured through the NELBO bound, whose slack
-inflates the magnitude but not the sign — the slack-robust floor is
-+0.028), and the gap is budget-stable as far as the recovery corpus can
+share, 54x its paired SE; measured through the NELBO bound, whose
+level-only slack inflates the magnitude but not the sign — the slack-robust
+floor is +0.028, and §10 states what damage-correlated slack would take to
+flip it), and the gap is budget-stable as far as the recovery corpus can
 carry the comparison. The mechanism has a measured signature:
 quantization's depth-chaos converts a few thousand flipped
 levels into percent-scale per-forward token disagreement, and the diffusion

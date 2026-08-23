@@ -292,7 +292,7 @@ pathway, at a stated budget, against a measured noise floor.
 
 One model, one scale (0.5B) — extreme-quantization results are known to change
 with scale, and BitNet b1.58's parity claim explicitly *begins* at 3B. 1.23M
-recovery tokens, three to six orders of magnitude below the ternary-QAT
+recovery tokens, between 10^3.5 and 10^6.5 below the ternary-QAT
 literature. One corpus, which is also the evaluation corpus, so no perplexity
 here is out-of-distribution. Weight-only quantization; activations stay FP32.
 Five seeds on the contested pair, one on each FP32 arm. No sweep of the gate

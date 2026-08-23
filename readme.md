@@ -16,8 +16,8 @@ run on a single Apple Silicon machine, combining:
 > [paper/preprint.md](paper/preprint.md) Part II.** Sub-2-bit (ternary,
 > 1.725 bits stored) weights on a masked discrete diffusion model, run as a
 > factorial against the same quantization on the autoregressive twin:
-> **ternary costs the diffusion model 25.7% of its headroom against 14.6%
-> autoregressive — interaction +0.111 in headroom share, 56x its paired SE,
+> **ternary costs the diffusion model 25.7% of its headroom against 14.5%
+> autoregressive — interaction +0.111 in headroom share, 54x its paired SE,
 > sign stable across three paired seeds.** At this scale and budget the
 > diffusion objective is measurably more fragile under sub-2-bit weights.
 > The autoregressive 1-bit ablation below is the prior measurement that
