@@ -2,9 +2,11 @@
 
 One repository, two completed factorial experiments, one thesis answered.
 Every number below traces to a ledger row (`results/ledger.jsonl`,
-`results/diffusion_ledger.jsonl`, `results/grid_ledger.jsonl`) carrying its
-arm or cell, seed, git commit and full training configuration. 50 commits,
-83 tests, single Apple M5, base model Qwen1.5-0.5B-Chat throughout.
+`results/diffusion_ledger.jsonl`, `results/grid_ledger.jsonl`,
+`results/inference_bench.jsonl`, `results/compounding_ledger.jsonl`)
+carrying its arm or cell, seed, git commit and full training configuration;
+`verify_numbers.py` recomputes every derived statistic below from those
+rows. 83 tests, single Apple M5, base model Qwen1.5-0.5B-Chat throughout.
 
 ---
 
@@ -17,12 +19,12 @@ seeds.**
 
 | | share of headroom destroyed, per seed | mean | sd |
 |---|---|---|---|
-| diffusion | 0.2607, 0.2558, 0.2541 | **25.7%** | 0.0034 |
-| autoregressive | 0.1523, 0.1405, 0.1436 | **14.6%** | 0.0061 |
+| diffusion | 0.2607, 0.2558, 0.2541 | **25.7%** | 0.34 pp |
+| autoregressive | 0.1523, 0.1405, 0.1436 | **14.5%** | 0.61 pp |
 
 Paired per-seed interaction +0.1084, +0.1153, +0.1105 — mean **+0.1114**,
-paired SE **0.0020**, i.e. **56x the standard error**, sign stable across
-every seed. Raw nats (not commensurable across metrics, ledgered): +2.071
+paired SE **0.0020**, i.e. **54x the standard error** at full precision
+(0.111408/0.002048), sign stable across every seed. Raw nats (not commensurable across metrics, ledgered): +2.071
 NELBO on diffusion, +1.344 NLL autoregressive.
 
 Nothing published is comparable: every existing quantization result for
@@ -32,12 +34,18 @@ only for autoregressive models. The one comparative PTQ datapoint
 ordering — so the regime boundary between PTQ-above-2-bits and
 QAT-below-2-bits is the natural next measurement.
 
-**Why the comparison is legitimate.** Autoregressive arms report next-token
-NLL; diffusion arms report a sampled NELBO bound on an easier task. The
-levels are never compared. What is compared is the fraction of headroom below
-a *shared* floor — `log(151936) = 11.9312` nats, which both metrics assign to
-a model that has learned nothing — destroyed by quantization. That fraction
-is dimensionless and means the same thing in both regimes.
+**Why the comparison is legitimate — and its one asymmetry.** Autoregressive
+arms report next-token NLL; diffusion arms report a sampled NELBO bound on an
+easier task. The levels are never compared. What is compared is the fraction
+of headroom below a *shared* floor — `log(151936) = 11.9312` nats, which both
+metrics assign to a model that has learned nothing — destroyed by
+quantization. That fraction is dimensionless. The asymmetry: the diffusion
+side is measured through an upper bound while the AR side is exact, and
+bound slack inflates the diffusion share. The interaction's *sign* survives
+any slack that does not grow with damage (worst-case floor +0.028); the
+magnitudes (25.7%, 14.5%, 1.77x) are bound-contaminated. A bound-free
+corroboration agrees on the ordering: mask accuracy falls 41.6% relative
+under ternary vs 32.9% for AR top-1.
 
 **What it does not say.** Not that diffusion models cannot be quantized (26%
 of headroom lost is damaged, not floored). Not that diffusion is worse than
@@ -116,6 +124,19 @@ length** — 2.9x faster at 16 steps, 1.4x at 32, crossover ≈ 45 steps for a
 128-token block. DiffusionGemma's ≤48-steps-per-256-token-block design point
 sits exactly on that tradeoff. Raw rows: `results/inference_bench.jsonl`.
 
+## Cross-step compounding (§8.4; one seed, one noise draw per arm — observations, not distributions)
+
+Twins of the published diffusion cells whose master weights differ by
+relative Gaussian noise ε, run greedily from identical prompts. Wherever
+per-forward disagreement is nonzero, 32 denoising steps multiply it ~6–8x —
+in FP32 as much as ternary: the amplification belongs to the sampler, not
+the weights. Below a threshold the trajectory heals instead (FP32 @ ε=1e-4:
+0.26% per-forward → exactly 0 at S=32, via a non-monotone excursion to 3.9%
+at S=16); the bracket on that threshold is 0.26%–1.43% per-forward, no
+tighter. What ternary changes is the entry price: 42% trajectory divergence
+at a perturbation two orders of magnitude smaller than FP32 needs
+(1e-4 vs 1e-2). Raw rows: `results/compounding_ledger.jsonl`.
+
 ## Part I — the prior experiment (frozen, unpublished)
 
 A 2x2 crossing {FP32, 1-bit binary} with a cross-layer attention residual
@@ -131,7 +152,7 @@ Per the decision to freeze: checkpoints and model cards exist locally, weights
 were not uploaded, preprint Part I and `paper/post.md` were not published.
 
 **The two-part contrast is itself a validation.** Same protocol, same
-pipeline: a null at 1.2x SE and an effect at 56x. The instrument demonstrably
+pipeline: a null at 1.2x SE and an effect at 54x. The instrument demonstrably
 reports what it cannot detect.
 
 ## Methodological findings that stand on their own
@@ -187,7 +208,8 @@ reports what it cannot detect.
 | `paper/post.md` | Part I as a technical post (unpublished, per freeze) |
 | `docs/PROTOCOL.md` | Part I design, prior art, confounds, TODOs |
 | `docs/ROADMAP.md` | Thesis, gap analysis, order of work, statuses |
-| `results/*.jsonl` | Three ledgers; smoke runs tagged so nothing pools them |
+| `results/*.jsonl` | Five ledgers; smoke runs tagged so nothing pools them |
+| `verify_numbers.py` | Recomputes every derived statistic here from the raw ledger rows |
 | `checkpoints/` | Two 1-bit AR checkpoints + generated model cards (local only) |
 | `run_grid.py` / `run_diffusion_check.py` / `run_ablation.py` | The experiments |
 | `export_checkpoint.py` / `eval_checkpoint.py` / `make_model_card.py` / `upload_to_hf.py` | Publication chain (dry-run by default, preflighted) |
@@ -201,8 +223,8 @@ port = PyTorch to 1e-5 on CPU; MLX trains (1.72x faster), PyTorch measures.
 
 - Seeds beyond three on the grid (magnitude interval; sign is settled).
 - Mechanism separation for the 1.77x (§8.2 candidates).
-- Cross-denoising-step error compounding: posed, instrumented, unmeasured —
-  a damage mode with no autoregressive analogue.
+- Measuring the NELBO bound slack, or a second bound-free damage metric —
+  the audit's remaining major concern about the headline magnitudes.
 - The PTQ/QAT regime boundary against arXiv:2604.20079's opposite ordering.
 - PIQA. Gain sweep on `ALPHA_GAIN`. Second-distribution held-out corpus.
 - MLX headroom: `mx.compile` (~20–40% typical) and `mx.fast.rope`, both

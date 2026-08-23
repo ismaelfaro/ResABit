@@ -4,7 +4,11 @@
 (`results/ledger.jsonl`, `results/diffusion_ledger.jsonl`,
 `results/grid_ledger.jsonl`, `results/inference_bench.jsonl`,
 `results/compounding_ledger.jsonl`); none is
-hand-entered. The placeholder policy — unmeasured quantities are marked
+hand-entered. Derived statistics (headroom shares, the paired SE, the
+SE ratio) are emitted by `verify_numbers.py` against those ledgers — an
+audit found earlier drafts quoted a paired SE no repo script computed,
+which is exactly the failure mode this policy exists to prevent. The
+placeholder policy — unmeasured quantities are marked
 `[PENDING]`, and there is no other kind of placeholder — held throughout;
 as of this draft every planned measurement is in and no marker remains.**
 
@@ -35,12 +39,17 @@ it; and ternary with an absmax scale silently zeroes 85% of a Gaussian
 matrix, which is why the scale statistic travels with the scheme.
 
 The factorial is complete at three paired seeds, and it resolves: **ternary
-quantization costs the diffusion model 25.7% of its headroom against 14.6%
+quantization costs the diffusion model 25.7% of its headroom against 14.5%
 for the autoregressive model — an interaction of +0.111 in headroom share,
-56x its paired standard error, sign stable across every seed.** The same
-protocol that returned a null 1.2x its SE in Part I returns this at 56x,
+54x its paired standard error, sign stable across every seed.** The same
+protocol that returned a null 1.2x its SE in Part I returns this at 54x,
 which is the strongest available evidence the effect is real rather than
-pipeline artifact. At this scale and budget, the masked-diffusion objective
+pipeline artifact. One asymmetry travels with the headline and is bounded
+in §10: the diffusion loss is a variational upper bound while the AR loss
+is exact, which inflates the diffusion share by an unmeasured amount — the
+interaction's *sign* survives any bound slack that does not itself grow
+with quantization damage (worst-case floor +0.028), but the quoted
+magnitudes are bound-contaminated. At this scale and budget, the masked-diffusion objective
 is measurably more fragile under sub-2-bit weights than next-token
 prediction — the opposite ordering from the literature's one comparative
 PTQ datapoint at 2–4 bits, which makes the regime boundary the next
@@ -255,8 +264,10 @@ budget*.
 during iteration; the zero-shot suite and wikitext test are run once, at the
 end, on the final arms.
 
-**Implementation.** Training on MLX (1.72x faster than PyTorch/MPS on the
-real QAT step: 1140 ms vs 1959 ms per fwd+bwd, batch 2 x seq 512, Apple M5).
+**Implementation.** Training on MLX (a one-off head-to-head recorded in the
+commit log, not ledgered: 1140 ms vs 1959 ms per fwd+bwd on the real QAT
+step, batch 2 x seq 512, Apple M5 — 1.72x; the only backend-paired ledger
+rows are 2-step smoke runs and do not measure steady-state throughput).
 All reported metrics are computed in PyTorch, because MLX's Metal matmul is
 not true FP32 — measured against float64 on a 1024-wide matmul it is 0.098
 off versus PyTorch's 0.00013, roughly bf16-grade accumulation. The PyTorch
@@ -506,9 +517,19 @@ as bit fields — it loads clean and is wrong everywhere), and the freeze
 reduction is asserted to match the training forward's, because an absmax
 freeze against an absmean forward trains normally and collapses on export.
 
-Unlike Part I's binary path, the straight-through clip genuinely fires here:
-`w/absmean` exceeds 1 for the roughly one-third of weights above the group
-mean.
+Unlike Part I's binary path, the straight-through clip *condition* genuinely
+fires here: `w/absmean` exceeds 1 for the ~42% of Gaussian weights above the
+group mean absolute value (e^-1 ≈ 37% under a Laplacian; the fraction on the
+trained weights was not recorded and the FP32 masters are deleted at freeze,
+so it cannot be recomputed). But an audit found the two backends disagree on
+what happens when it fires: the PyTorch reference zeroes the gradient where
+`|w/scale| > 1`, while the MLX kernel — the backend that trained every arm —
+passes it through unclipped. Forward paths agree bit-for-bit; the training
+gradient was the unclipped estimator. Every cell trained on the same MLX
+estimator, so the factorial's internal comparisons are unaffected, but any
+replication on a clipped-STE backend is a different training run. Aligning
+the backends is deferred to the next reproducibility epoch, alongside the
+other gradient-semantics changes (§Future improvements in the roadmap).
 
 ## 7. The diffusion model, and the check that gated everything
 
@@ -518,13 +539,18 @@ originals bidirectionally, generate by iterative unmasking with
 low-confidence remasking. The loss is the `1/t`-weighted NELBO estimator,
 with the rate clamped at 1e-3 because `1/t` has infinite variance at the
 bottom of the range — a declared, slight bias in place of an undeclared
-unstable one.
+unstable one. The bias is now bounded, not just declared: at most 0.006
+nats on the ledgered models (≤0.002 on the interaction), and exactly zero
+for the uniform reference the floor is computed from.
 
 `[MASK]` takes token id 151646: Qwen1.5 ships 151936 embedding rows for a
 tokenizer that stops at 151646, so 290 pretrained-but-unreachable rows exist
-(distinct vectors, identical norm 0.3094, the 1.2th percentile of trained
+(distinct vectors, identical norm 0.3094, the 0.94th percentile of trained
 rows), and taking one avoids resizing the embedding, breaking the tie to the
-readout, or invalidating the HuggingFace parity test.
+readout, or invalidating the HuggingFace parity test. (The padded vocabulary
+is also why the floor uses `log(151936)` rather than `log(151646)`: both
+metrics see the same 151936-way softmax, and switching floors moves the
+shares by under 1e-4.)
 
 Corruption is always injected, never drawn inside the model: two backends
 cannot agree on a random draw, so the parity suite hands both the identical
@@ -573,6 +599,28 @@ shared floor, and the **fraction of headroom destroyed by quantization** is
 dimensionless and commensurable across regimes. Raw nats are recorded per
 cell for anyone who rejects the normalisation.
 
+Two properties of that choice, one conceded and one claimed. Conceded:
+`log(vocab)` is not the unique shared floor — *any* context-free reference
+(a unigram model, a constant-logit model) scores identically under both
+metrics in expectation, so the floor is a one-parameter family and the
+interaction's magnitude depends on which member is chosen (+0.29 at a
+floor of 7.5 nats, +0.11 at `log V`, +0.03 at 30). Claimed: the
+interaction's **sign** is invariant across every floor above both FP32
+losses — that is, every floor that can be called "learned nothing" at all —
+which is a robustness property the normalisation gets for free. The
+max-entropy member is used because it is the only one requiring no fitted
+reference.
+
+Matched budget means matched *presented* tokens: 1,228,800 per cell. The
+diffusion arms compute loss only on masked positions — 616,449 supervised
+positions at seed 0, about half — so the two architectures receive
+different supervision per step. The 2x2 differences this out of the
+interaction (both diffusion cells see it identically), but the
+per-architecture shares inherit it, one more reason the shares are read as
+within-architecture quantities. The evaluations also differ in extent: AR
+NLL is computed over 131,071 validation tokens, the diffusion NELBO over
+48 blocks of 512 tokens (24,576 positions) at 4 corruptions each.
+
 ### 8.1 Result
 
 Three paired seeds, all cells complete. Means with seed-to-seed sd:
@@ -592,8 +640,12 @@ Ternary cost, as the share of headroom destroyed:
 | autoregressive | 0.1523, 0.1405, 0.1436 | **0.1455** | 0.0061 |
 
 Per-seed paired interaction: +0.1084, +0.1153, +0.1105 — the sign never
-moves. Mean **+0.1114**, paired SE **0.0020**: 56x the standard error,
-against the same 2 SE rule Part I's null sat inside.
+moves. Mean **+0.1114**, paired SE **0.0020**: 54x the standard error at
+full precision (0.111408/0.002048; earlier drafts printed "56x", the
+quotient of the two rounded figures). The grid script's own console prints
+the more conservative unpaired Welch SE, 0.0040 — 28x. Both conventions,
+and both are emitted by `verify_numbers.py`, clear the same 2 SE rule
+Part I's null sat inside by an order of magnitude.
 
 **Ternary quantization costs the diffusion model a 1.77x larger share of its
 headroom than it costs the autoregressive model, at matched budget, matched
@@ -603,7 +655,7 @@ against +1.344 NLL autoregressive.
 
 Part I's null and this result were produced by the same protocol, which is
 worth a sentence: the instrument distinguishes an effect it cannot detect
-(−0.021 nats, 1.2x its SE) from one it can (+0.111, 56x). The contrast is
+(−0.021 nats, 1.2x its SE) from one it can (+0.111, 54x). The contrast is
 the strongest available evidence that the effect here is real rather than
 an artifact of the pipeline.
 
@@ -637,13 +689,19 @@ the same seed on the 1.23M budget, well inside the ±0.03 rule fixed in
 advance. Recovery buys both architectures back at similar absolute rates
 and the diffusion penalty persists; as a *ratio* the gap widens (1.7x →
 2.8x) because the AR side approaches zero cost faster. Under the
-pre-registered rule this triggered the 19.7M rung.
+pre-registered rule this triggered the 19.7M rung. One caveat the ledger
+imposes on "budget-stable": the rung-2 FP32 AR reference already shows the
+memorisation onset that destroys rung 3 — train 2.063 against eval 2.732,
+a 0.67-nat gap where the 1x runs have none — so the stability claim rests
+on an AR anchor that is beginning to overfit the corpus, and 2 epochs is
+where this corpus stops supporting the comparison cleanly, not 8.
 
 **Rung 3: the instrument breaks on the AR side, and the break is the
 finding.** 19.7M tokens is ~8 epochs of wikitext-2's ~2.5M-token train
 split, and the FP32 autoregressive arm memorises it: final train loss
-**0.0302** against a validation NLL of 4.8898 — worse than its own 1x-budget
-value of 2.6909. The ternary twin *cannot* memorise as hard (train 0.7774)
+**0.0302** against a validation NLL of 4.8898 — worse than this seed's own
+1x-budget value of 2.6846 (2.6909 is the three-seed mean; the ladder runs
+seed 0 only). The ternary twin *cannot* memorise as hard (train 0.7774)
 and generalises better, so the "cost of ternary" flips sign (−0.49 nats,
 share −0.0697). The rung-3 interaction (+0.158 nominal) is therefore
 **uninterpretable as quantization damage**: the headroom-share normalisation
@@ -669,7 +727,8 @@ Two different quantities share this column and the distinction matters:
 BitNet and Bonsai train ternary models from scratch (or near it); we
 *recover* a pretrained FP32 model after ternarising it. Recovery is the
 cheaper regime and the only one this hardware supports — Bonsai's 3.8B
-tokens would take ~43 days per cell here. The table is context, not a
+tokens would take 40–44 days per FP32 cell at measured throughput, and
+51–78 days for the slower ternary cells. The table is context, not a
 claim of parity.
 
 What is actionable at this scale is the *trend*: a budget ladder on the same
@@ -756,13 +815,17 @@ than the FP32 model needs.
 **Below a threshold, the trajectory heals.** The FP32 arm at ε = 1e-4
 (0.26% per forward) ends at exactly zero disagreement after 32 steps —
 later steps, conditioning on a majority of identical commitments, pull the
-stray ones back. Absorption is not just "no growth"; small enough divergence
-is actively corrected. The ternary arm at ε = 1e-6 sits in the same basin
-(every one of its 83 flipped levels absorbed by commitment margins). The
-sampler therefore has two regimes with a boundary somewhere below ~1%
-per-forward disagreement, and sub-2-bit quantization's real risk is that
-depth-chaos pushes an otherwise-benign weight perturbation across that
-boundary. A first run of this experiment at ε = 1e-6 alone concluded
+stray ones back. Healing is an endpoint statement, not a monotone decay:
+the same trajectory wanders up to 3.9% disagreement at S=16 before the
+final steps pull it to zero. Absorption is not just "no growth"; small
+enough divergence is actively corrected — eventually. The ternary arm at
+ε = 1e-6 sits in the same basin (every one of its 83 flipped levels
+absorbed by commitment margins). The sampler therefore has two regimes with
+a boundary the decade-spaced ε grid brackets between 0.26% per-forward
+disagreement (heals to zero) and 1.43% (grows 8.2x) — it cannot be pinned
+tighter than that from these runs — and sub-2-bit quantization's real risk
+is that depth-chaos pushes an otherwise-benign weight perturbation across
+that boundary. A first run of this experiment at ε = 1e-6 alone concluded
 "absorbed" and was true but vacuous — the sweep exists because a flat curve
 with nothing to amplify answers no question.
 
@@ -819,9 +882,9 @@ Shared by both parts:
   The named target of Part II's thesis — models like DiffusionGemma-26B-A4B —
   cannot be QAT'd on this hardware at all, so Part II bears the same relation
   to its target that BitNet's small-scale ablations bear to its 3B claim.
-- **1.23M recovery tokens**, three to six orders of magnitude below the
-  ternary-QAT literature (BitNet b1.58 2B4T: 4T tokens). This is a
-  low-budget-recovery result and is labelled as one throughout.
+- **1.23M recovery tokens**, between 10^3.5 and 10^6.5 below the
+  ternary-QAT literature (Bonsai: 3.8B tokens; BitNet b1.58 2B4T: 4T).
+  This is a low-budget-recovery result and is labelled as one throughout.
 - **One recovery corpus** (wikitext-2), which is narrow — and it is also the
   corpus every reported perplexity is measured on. There is no held-out
   perplexity from a second distribution, so none of the perplexity numbers
@@ -850,23 +913,49 @@ Shared by both parts:
 
 Specific to Part II:
 
-- **Three seeds.** Enough for a sign-stable effect 56x its SE; not enough
+- **Three seeds.** Enough for a sign-stable effect 54x its SE; not enough
   for a tight interval on the magnitude, and Part I is the standing reminder
-  of what fewer seeds are worth.
+  of what fewer seeds are worth. With df=2 the 95% t-interval on the
+  interaction is [0.103, 0.120], and the SD estimate is itself noisy —
+  though even a worst-case 4.4x SD inflation leaves the effect above 12 SE.
 - **The candidate mechanisms are not separated** (§8.3). The design
   identifies *that* the diffusion objective loses more, not *why*.
 - **The headroom-share normalisation is a modelling choice.** It is the only
   quantity offered as commensurable across architectures, the raw nats are
   ledgered so it can be recomputed differently, and a reader who rejects it
   is left with two within-architecture costs and no interaction.
-- **The diffusion evaluation is a bound**, estimated with 4 corruptions per
-  block; its Monte Carlo error is not yet characterised, and it shares the
-  wikitext-2 single-corpus caveat above.
+- **The diffusion evaluation is a bound, and the bound contaminates the
+  headline magnitudes.** NELBO ≥ NLL, so the diffusion cells are scored
+  through a variational upper bound while the AR cells are exact — and both
+  guaranteed bias directions inflate the diffusion share: slack in the FP32
+  cell shrinks the measured headroom denominator, and any extra slack in
+  the ternary cell inflates the numerator. The slack is unmeasured (exact
+  diffusion NLL is intractable) and nothing bounds whether it grows with
+  quantization damage. What survives arbitrary *level-only* slack is the
+  interaction's sign, with a worst-case floor of +0.028: even if the true
+  FP32 diffusion NLL were zero, the raw NELBO delta alone forces the
+  diffusion share above the AR share. For the sign to flip, ternary would
+  have to add 0.34–0.90 nats of *pure slack* — 16–43% of the observed
+  +2.071 NELBO delta being bound-loosening rather than damage. A bound-free
+  corroboration points the same way: mask accuracy falls 41.6% relative
+  under ternary against 32.9% for AR top-1 — the same ordering on a metric
+  with no variational gap. So "25.7% vs 14.5%" and "1.77x" are
+  bound-contaminated magnitudes; "the diffusion objective loses more" is
+  not. The estimate also carries Monte Carlo error (4 corruptions per
+  block, not yet characterised) and shares the wikitext-2 single-corpus
+  caveat above.
 - **The adaptation is shallow.** 1.23M tokens of continued pretraining on top
   of an autoregressive model, not a diffusion model trained as one — the
   Dream/TESS-2 recipe at a tiny fraction of their budgets. Mask accuracy of
   0.27 clears the measurability bar; it is not a claim of a usable model.
-- **Cross-denoising-step compounding is measured** (§8.4): the sampler multiplies per-forward disagreement ~6-8x in both regimes, heals it below a ~1% threshold, and ternary lowers the perturbation needed to cross that threshold by two orders of magnitude. One seed, one epsilon grid, greedy sampling only.
+- **Cross-denoising-step compounding is measured** (§8.4): the sampler
+  multiplies per-forward disagreement ~6-8x in both regimes and heals it
+  below a threshold bracketed at 0.3–1.4% per-forward disagreement; the
+  ternary arm reaches 42% trajectory divergence at a perturbation two
+  orders of magnitude smaller than the FP32 arm needs (1e-4 vs 1e-2 — the
+  threshold-*crossing* ratio itself is only bracketed by the decade grid).
+  One seed, one noise draw per (arm, ε), greedy sampling only — these are
+  single-trajectory observations, not distributions.
 
 ---
 
@@ -904,20 +993,22 @@ existing compensation designs.
 Four measurements, one arc. A masked diffusion language model adapted from
 an autoregressive base loses a 1.77x larger share of its capability to
 ternary quantization than the autoregressive twin does (+0.111 in headroom
-share, 56x its paired SE), and the gap is budget-stable as far as the
-recovery corpus can carry the comparison. The mechanism has a measured
-signature: quantization's depth-chaos converts a few thousand flipped
+share, 54x its paired SE; measured through the NELBO bound, whose slack
+inflates the magnitude but not the sign — the slack-robust floor is
++0.028), and the gap is budget-stable as far as the recovery corpus can
+carry the comparison. The mechanism has a measured signature:
+quantization's depth-chaos converts a few thousand flipped
 levels into percent-scale per-forward token disagreement, and the diffusion
 sampler — which has no autoregressive analogue — multiplies whatever
 disagreement exists by ~6–8x across denoising steps, while actively healing
-divergence below a ~1% threshold. And the same structural fact that makes
+divergence below a threshold bracketed at 0.3–1.4%. And the same structural fact that makes
 diffusion fragile makes sub-2-bit weights more valuable there: with no KV
 cache, weight traffic is paid on every denoising step, and uncached block
 diffusion beats cached autoregressive decode precisely in the
 steps-below-block-length regime production diffusion LMs ship in.
 
 The instrument is the other contribution. One protocol returned a null at
-1.2x its standard error (Part I), a positive at 56x (Part II), an
+1.2x its standard error (Part I), a positive at 54x (Part II), an
 informative self-breakage (the ladder's corpus exhaustion), and a
 prediction of its author's overturned by measurement (the frozen-path
 8 micronats). A pipeline that is bitwise reproducible across scripts, that

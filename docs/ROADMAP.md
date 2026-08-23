@@ -115,10 +115,10 @@ HuggingFace.
    fields — it loads clean and every weight is wrong).
 3. **The grid — complete, three paired seeds, and it resolves.** Ternary
    costs the diffusion model **25.7%** of its headroom below the uniform
-   floor against **14.6%** for the autoregressive model: an interaction of
-   **+0.111 in headroom share, 56x its paired SE**, sign stable across every
+   floor against **14.5%** for the autoregressive model: an interaction of
+   **+0.111 in headroom share, 54x its paired SE**, sign stable across every
    seed (per-seed +0.108, +0.115, +0.111). The same protocol that returned
-   Part I's null at 1.2x SE returns this at 56x. Raw nats: +2.071 NELBO on
+   Part I's null at 1.2x SE returns this at 54x. Raw nats: +2.071 NELBO on
    diffusion, +1.344 NLL autoregressive — not commensurable, ledgered.
    Full table and the mechanisms the design does not separate:
    `paper/preprint.md` §8.
@@ -165,7 +165,7 @@ accident and once by design:
    the grid's cost) would have killed the experiment cheaply if the
    adaptation had floored; grid seed 0 then showed +0.108 before seeds 1–2
    were bought.
-3. **Full seeds only after signal.** Three seeds bought a 56x-SE verdict
+3. **Full seeds only after signal.** Three seeds bought a 54x-SE verdict
    precisely because the shape was already visible at one.
 
 **Applied to the budget ladder, decision rule fixed in advance:** the 19.7M
@@ -194,16 +194,22 @@ for this project, not a result this project is putting its name to.
 Surveyed 2026-08-08, mapped to this repository's measured pain points, in
 descending leverage.
 
-**1. The embedding table is 94% of the file (storage).** Our checkpoint is
-666 MB: 43 MB of ternary projections, 623 MB of FP32 embeddings — the
-honest-accounting section has said so from the start, and the literature
-now has a direct answer. CARVQ (arXiv:2510.12721) compresses LLM embeddings
-post-training to ~1.6 bits with a corrective adaptor and group residual
-vector quantization, no special hardware; plain INT8 is a 4x cut with
-near-zero risk. Even FP16 halves the file. Ladder of effort:
+**1. The embedding table is 94% of the file (storage).** Our Part I
+checkpoint is 666 MB: 43 MB of binary (q1_0, 1.125-bit) projections, 623 MB
+of FP32 embeddings — the honest-accounting section has said so from the
+start (a ternary projection block at 1.725 bits would be ~66 MB), and the
+literature now has a direct answer. CARVQ (arXiv:2510.12721) compresses LLM
+embeddings post-training to ~1.6 bits with a corrective adaptor and group
+residual vector quantization, no special hardware; plain INT8 is a 4x cut
+with near-zero risk. Even FP16 halves the file. Ladder of effort:
 FP16 (an afternoon, ~350 MB) → INT8 (~200 MB) → CARVQ-style (~75 MB,
 whole checkpoint under 120 MB). This is the only change that moves
-checkpoint size materially, because the projections are already 1.725 bits.
+checkpoint size materially, because the projections are already sub-2-bit.
+**Measured 2026-08-21 on the 1-bit checkpoint** (`results/embed_measure.log`,
+131,071 eval tokens): fp32 ppl 282.2098; fp16 282.2099 (free); per-row-absmax
+INT8 282.4631 — +0.25 ppl, an order of magnitude under the ±3.165
+seed-to-seed sd. INT8 embeddings are safe at this scale; the codec is the
+next implementation step.
 
 **2. Export to bitnet.cpp / T-MAC instead of writing Metal kernels
 (speed).** Our INT8 path (one GEMM per group of 128) is exactly the shape
@@ -244,12 +250,17 @@ could close most of that 1%. Not worth the complexity until items 1–3 land.
 Audited while rung 3 ran. The execution already uses what matters —
 `mx.fast.rms_norm`, `mx.fast.scaled_dot_product_attention`, the
 per-micro-batch `mx.eval` that keeps grad-accum graphs out of swap, GPU
-device confirmed live, 1.72x over PyTorch/MPS measured. Two real gains are
-deliberately left on the table:
+device confirmed live, 1.72x over PyTorch/MPS in a one-off head-to-head
+(commit-log record, not ledgered). Gains deliberately left on the table:
 
 - **`mx.compile` on the training step** — typically 20–40% on MLX from
   kernel fusion. Not used anywhere.
 - **`mx.fast.rope`** — RoPE is hand-rolled (outer + concat + rotate_half).
+- **STE backward alignment** — the MLX ternary kernel passes gradients
+  through unclipped where the PyTorch reference clips at `|w/scale| > 1`
+  (~42% of Gaussian entries); every published arm trained on the unclipped
+  MLX estimator, so aligning them is a semantic change to training, not a
+  bugfix of the published numbers.
 
 Both change floating-point accumulation order, and three of this project's
 results lean on bitwise reproducibility (zero ledger drift across scripts,
