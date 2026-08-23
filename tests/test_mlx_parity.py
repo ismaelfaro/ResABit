@@ -328,3 +328,42 @@ def test_ternary_keeps_more_of_the_model_than_binary(hf_state):
     assert scores["q1_58"] < scores["q1_0"], (
         f"ternary should be less destructive than binary before training: {scores}"
     )
+
+
+def test_ternary_ste_backward_diverges_between_backends_as_documented():
+    """Forward kernels agree bitwise; the ternary BACKWARD does not.
+
+    The PyTorch reference clips gradients where |w/scale| > 1; the MLX kernel
+    that trained every published arm passes them through unclipped. The binary
+    path has no such divergence (its clip never fires). Pinned so the gap can
+    only close deliberately -- aligning the estimators is an epoch-break
+    change (ROADMAP, Future improvements), not a drive-by fix.
+    """
+    from src.mlx_backend.model import (
+        fake_quantize as mlx_binary,
+        ternary_fake_quantize as mlx_ternary,
+    )
+    from src.quantization import (
+        fake_quantize as torch_binary,
+        ternary_fake_quantize as torch_ternary,
+    )
+
+    rng = np.random.default_rng(0)
+    w = rng.standard_normal((64, 256)).astype(np.float32)
+
+    def torch_grad(fn):
+        wt = torch.from_numpy(w.copy()).requires_grad_(True)
+        fn(wt, 128).sum().backward()
+        return wt.grad.numpy()
+
+    def mlx_grad(fn):
+        return np.array(mx.grad(lambda a: fn(a, 128).sum())(mx.array(w)))
+
+    binary_gap = np.abs(torch_grad(torch_binary) - mlx_grad(mlx_binary))
+    assert binary_gap.max() < 1e-5, "binary backward parity broke"
+
+    ternary_gap = np.abs(torch_grad(torch_ternary) - mlx_grad(mlx_ternary))
+    assert ternary_gap.max() > 0.5 and (ternary_gap > 1e-6).mean() > 0.99, (
+        "ternary backward gap closed -- if the estimators were deliberately "
+        "aligned, retire this pin and start a new reproducibility epoch"
+    )

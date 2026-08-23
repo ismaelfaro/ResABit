@@ -46,9 +46,13 @@ def ternary_fake_quantize(w: mx.array, group_size: int) -> mx.array:
     """Q1_58 round-trip with a straight-through gradient.
 
     The scale is an absmean, not the absmax the binary path uses, so
-    ``w/scale`` exceeds 1 for above-average weights and the clip is doing
-    real work here -- unlike in :func:`fake_quantize`, where the argument is
-    inside [-1,1] by construction.
+    ``w/scale`` exceeds 1 for ~42% of Gaussian weights. The FORWARD clips
+    those to the {-1,0,+1} levels; the BACKWARD does not clip -- the
+    ``stop_gradient`` construction is an identity STE, unlike the PyTorch
+    reference (:class:`src.quantization._STERoundClamp`), which zeroes
+    gradients where ``|w/scale| > 1``. Every published arm trained on this
+    unclipped estimator; the divergence is pinned by a test, and aligning
+    the backends is an epoch-break change (ROADMAP, Future improvements).
     """
     out_features, in_features = w.shape
     g = w.reshape(out_features, in_features // group_size, group_size)

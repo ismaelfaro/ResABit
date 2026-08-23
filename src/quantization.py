@@ -97,7 +97,10 @@ class _STERoundClamp(torch.autograd.Function):
 
     Unlike the binary estimator this clip mask genuinely fires. The ternary
     scale is a mean, not a maximum, so ``w/scale`` runs past 1 for every
-    weight above average magnitude -- about a third of them.
+    weight above average magnitude -- ~42% of a Gaussian matrix. NOTE: the
+    MLX kernel that trained the published arms does NOT clip its backward
+    (identity STE); the divergence is pinned by a test and aligning the two
+    is an epoch-break change (ROADMAP, Future improvements).
     """
 
     @staticmethod

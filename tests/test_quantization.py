@@ -338,3 +338,35 @@ def test_scheme_survives_a_checkpoint_roundtrip():
 def test_unknown_scheme_is_refused():
     with pytest.raises(ValueError, match="unknown quantization scheme"):
         LowBitLinear(128, 8, group_size=128, scheme="q2_0")
+
+
+def test_legacy_checkpoint_without_scheme_code_loads_as_q1_0():
+    """Checkpoints exported before the ternary scheme existed carry no
+    scheme_code buffer; absent means q1_0, because it was the only scheme."""
+    layer = LowBitLinear(256, 32, group_size=128)
+    layer.quantize()
+    x = torch.randn(1, 256)
+    expected = layer(x)
+
+    legacy = {k: v for k, v in layer.state_dict().items() if k != "scheme_code"}
+    restored = LowBitLinear(256, 32, group_size=128)
+    restored.load_state_dict(legacy)
+    assert restored.scheme == "q1_0"
+    assert int(restored.scheme_code.item()) == 0
+    assert torch.allclose(expected, restored(x), atol=1e-5)
+
+
+def test_ternary_state_dict_without_scheme_code_would_misdecode_silently():
+    """The inverse of the legacy default: stripping scheme_code from a TERNARY
+    checkpoint makes the loader assume q1_0 and decode trits as bits. Pinned
+    so the failure mode stays documented rather than rediscovered."""
+    layer = LowBitLinear(256, 32, group_size=128, scheme="q1_58")
+    layer.quantize()
+
+    stripped = {k: v for k, v in layer.state_dict().items() if k != "scheme_code"}
+    restored = LowBitLinear(256, 32, group_size=128, scheme="q1_58")
+    restored.load_state_dict(stripped)
+    assert restored.scheme == "q1_0", (
+        "loader no longer defaults missing scheme_code to q1_0; "
+        "update the legacy-load contract and this pin together"
+    )
