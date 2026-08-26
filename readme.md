@@ -1,4 +1,4 @@
-# TriDi — ternary weights × discrete diffusion
+# TriDi: ternary weights × discrete diffusion
 
 **Does sub-2-bit quantization damage a masked discrete diffusion language
 model more than it damages an autoregressive one?**
@@ -26,16 +26,16 @@ what was run.*
 **Does a cross-layer attention residual reduce the damage that 1-bit weight
 quantization does to a pretrained transformer?** A 2x2 ablation combining:
 
-- **Q1_0_g128** — one sign bit per weight plus an FP16 scale per group of
+- **Q1_0_g128** : one sign bit per weight plus an FP16 scale per group of
   128, following the 1-bit Bonsai line of work.
-- **Attention Residuals** (arXiv 2603.15031) — every layer accumulates the
+- **Attention Residuals** (arXiv 2603.15031) : every layer accumulates the
   sum of all prior attention outputs and re-injects it through a learnable
   per-layer gate.
 
 **Answer: no measurable interaction.** The residual does not preferentially
 repair binarization damage; the gates converge *negative*, and they do so in
-FP32 too. Binarizing 308M of 464M parameters costs 2.97 nats — a 19.5x
-perplexity increase — at this recovery budget. Its value now is as the
+FP32 too. Binarizing 308M of 464M parameters costs 2.97 nats, a 19.5x
+perplexity increase, at this recovery budget. Its value now is as the
 instrument's null: the same pipeline that returned 1.2x SE here returned
 54x above.
 
