@@ -13,7 +13,7 @@ separate file for that reason.
 
 Usage
 -----
-    python eval_checkpoint.py checkpoints/resabit-qwen1.5-0.5b-1bit
+    python eval_checkpoint.py checkpoints/tridi-qwen1.5-0.5b-1bit
     python eval_checkpoint.py --base            # shipped Qwen, no training
     python eval_checkpoint.py <dir> --tasks piqa --no-kl
 """

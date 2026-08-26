@@ -1,4 +1,4 @@
-# ResABit — project summary and final results
+# TriDi — project summary and final results
 
 One repository, two completed factorial experiments, one thesis answered.
 Every number below traces to a ledger row (`results/ledger.jsonl`,

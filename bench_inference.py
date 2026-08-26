@@ -46,7 +46,7 @@ import torch
 
 from src.config import ModelConfig
 from src.loader import HF_MODEL_ID, load_pretrained
-from src.model import ResABitForCausalLM
+from src.model import TriDiForCausalLM
 from src.quantization import quantize_model_weights
 
 RESULTS = Path("results/inference_bench.jsonl")
@@ -85,7 +85,7 @@ def build(name: str, device: torch.device, tiny: bool, hf_state=None):
             quantize_linear=quantize, quant_scheme=scheme, diffusion=diffusion,
             mask_token_id=511,
         )
-        model = ResABitForCausalLM(config)
+        model = TriDiForCausalLM(config)
     else:
         config = ModelConfig(quantize_linear=quantize, quant_scheme=scheme,
                              diffusion=diffusion)

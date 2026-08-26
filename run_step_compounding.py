@@ -113,9 +113,9 @@ def perturbed_twin(masters: dict, config, epsilon: float, seed: int, device):
     reference model, because freezing deletes the masters -- and the sweep
     needs them once per epsilon.
     """
-    from src.model import ResABitForCausalLM
+    from src.model import TriDiForCausalLM
 
-    twin = ResABitForCausalLM(config)
+    twin = TriDiForCausalLM(config)
     generator = torch.Generator().manual_seed(seed)
     with torch.no_grad():
         for name, param in twin.named_parameters():

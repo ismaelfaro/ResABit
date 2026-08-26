@@ -1,12 +1,12 @@
-"""ResABit -- 1-bit weights + attention residuals on Qwen1.5-0.5B."""
+"""TriDi -- 1-bit weights + attention residuals on Qwen1.5-0.5B."""
 
 from .config import ModelConfig
-from .model import ResABitForCausalLM
+from .model import TriDiForCausalLM
 from .quantization import LowBitLinear, quantize_model_weights
 
 __all__ = [
     "ModelConfig",
-    "ResABitForCausalLM",
+    "TriDiForCausalLM",
     "LowBitLinear",
     "quantize_model_weights",
 ]

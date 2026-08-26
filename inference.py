@@ -1,4 +1,4 @@
-"""Generate text from a ResABit checkpoint.
+"""Generate text from a TriDi checkpoint.
 
     python inference.py --checkpoint checkpoints/qwen0.5b-1bit/model.pt \
         --prompt "The future of AI is"
@@ -12,13 +12,13 @@ import torch
 
 from src.config import ModelConfig
 from src.loader import HF_MODEL_ID
-from src.model import ResABitForCausalLM
+from src.model import TriDiForCausalLM
 
 
 def load_checkpoint(path: str, device: torch.device):
     blob = torch.load(path, map_location="cpu", weights_only=False)
     config = ModelConfig.from_dict(blob["config"])
-    model = ResABitForCausalLM(config)
+    model = TriDiForCausalLM(config)
     model.load_state_dict(blob["state_dict"], strict=True)
     return model.to(device).eval(), config
 

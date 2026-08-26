@@ -1,10 +1,30 @@
-# ResABit
+# TriDi — ternary weights × discrete diffusion
+
+**Does sub-2-bit quantization damage a masked discrete diffusion language
+model more than it damages an autoregressive one?**
+
+A controlled factorial on [Qwen1.5-0.5B-Chat](https://huggingface.co/Qwen/Qwen1.5-0.5B-Chat),
+{FP32, ternary} × {autoregressive, diffusion}, three paired seeds, run on a
+single Apple Silicon machine.
+
+**Answer: yes, 1.77x more.** Ternary (1.725 bits/weight stored) costs the
+diffusion model **25.7%** of its headroom against **14.5%** autoregressive —
+interaction **+0.111** in headroom share, **54x its paired SE**, sign stable
+across every seed. Measured through a NELBO bound whose slack inflates the
+magnitude but not the sign (slack-robust floor +0.028). Full result and
+limitations: [paper/preprint.md](paper/preprint.md) Part II; project map:
+[docs/ROADMAP.md](docs/ROADMAP.md).
+
+*Formerly ResABit. The name changed when the thesis did — the ledgers,
+model cards and git history keep the old one, because they are records of
+what was run.*
+
+---
+
+## Part I — the prior measurement (frozen, unpublished)
 
 **Does a cross-layer attention residual reduce the damage that 1-bit weight
-quantization does to a pretrained transformer?**
-
-A controlled 2x2 ablation on [Qwen1.5-0.5B-Chat](https://huggingface.co/Qwen/Qwen1.5-0.5B-Chat),
-run on a single Apple Silicon machine, combining:
+quantization does to a pretrained transformer?** A 2x2 ablation combining:
 
 - **Q1_0_g128** — one sign bit per weight plus an FP16 scale per group of
   128, following the 1-bit Bonsai line of work.
@@ -12,22 +32,12 @@ run on a single Apple Silicon machine, combining:
   sum of all prior attention outputs and re-injects it through a learnable
   per-layer gate.
 
-> **The thesis question is answered — see
-> [paper/preprint.md](paper/preprint.md) Part II.** Sub-2-bit (ternary,
-> 1.725 bits stored) weights on a masked discrete diffusion model, run as a
-> factorial against the same quantization on the autoregressive twin:
-> **ternary costs the diffusion model 25.7% of its headroom against 14.5%
-> autoregressive — interaction +0.111 in headroom share, 54x its paired SE,
-> sign stable across three paired seeds.** At this scale and budget the
-> diffusion objective is measurably more fragile under sub-2-bit weights.
-> The autoregressive 1-bit ablation below is the prior measurement that
-> validates the instruments; [docs/ROADMAP.md](docs/ROADMAP.md) has the
-> project map.
-
 **Answer: no measurable interaction.** The residual does not preferentially
 repair binarization damage; the gates converge *negative*, and they do so in
 FP32 too. Binarizing 308M of 464M parameters costs 2.97 nats — a 19.5x
-perplexity increase — at this recovery budget.
+perplexity increase — at this recovery budget. Its value now is as the
+instrument's null: the same pipeline that returned 1.2x SE here returned
+54x above.
 
 Status: **2x2 complete and frozen, unpublished.** 15 runs in
 `results/ledger.jsonl`, five paired seeds on the contested pair. Checkpoints
@@ -222,7 +232,7 @@ checked.
 Score a checkpoint on the held-out suite without retraining:
 
 ```bash
-python eval_checkpoint.py checkpoints/resabit-onebit-seed0
+python eval_checkpoint.py checkpoints/tridi-onebit-seed0
 ```
 
 Watch a run in flight — step progress, loss curve, ETA, and the frozen-path
@@ -244,14 +254,14 @@ perplexity the file actually computes are exactly the two numbers a human
 would retype wrong.
 
 ```bash
-python make_model_card.py checkpoints/resabit-onebit-seed0
+python make_model_card.py checkpoints/tridi-onebit-seed0
 ```
 
 Upload is a dry run by default and refuses to publish a checkpoint whose card
 does not quote its own frozen perplexity:
 
 ```bash
-python upload_to_hf.py checkpoints/resabit-onebit-seed0 --repo <user>/resabit-1bit
+python upload_to_hf.py checkpoints/tridi-onebit-seed0 --repo <user>/tridi-1bit
 ```
 
 The released weights are research artifacts, and the card leads with that.

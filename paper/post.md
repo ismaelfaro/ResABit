@@ -311,6 +311,6 @@ the accumulator would.
 ---
 
 *Code, ledger, protocol and preprint:
-[ResABit](https://github.com/ismaelfaro/ResABit). Every number traces to a row
+[TriDi](https://github.com/ismaelfaro/TriDi). Every number traces to a row
 in `results/ledger.jsonl` carrying its arm, seed, git commit and full training
 configuration. Failed and diverged runs stay in the ledger.*

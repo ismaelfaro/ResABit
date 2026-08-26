@@ -1,4 +1,4 @@
-"""Model configuration for ResABit.
+"""Model configuration for TriDi.
 
 Base architecture is Qwen1.5-0.5B-Chat (``Qwen2ForCausalLM``):
 24 layers, hidden 1024, 16 heads (full MHA), SwiGLU intermediate 2816,

@@ -14,7 +14,7 @@ import torch
 
 from src.config import ModelConfig
 from src.diffusion import MIN_RATE, corrupt, diffusion_loss, sample_rates, uniform_bound
-from src.model import ResABitForCausalLM
+from src.model import TriDiForCausalLM
 
 
 @pytest.fixture(autouse=True)
@@ -139,7 +139,7 @@ def test_diffusion_attention_is_bidirectional():
     Under a causal mask it cannot, which makes this the direct test for the
     failure mode: a "diffusion" model that never dropped its mask.
     """
-    model = ResABitForCausalLM(_tiny(diffusion=True)).eval()
+    model = TriDiForCausalLM(_tiny(diffusion=True)).eval()
     ids = torch.randint(0, 500, (1, 16))
 
     with torch.no_grad():
@@ -151,7 +151,7 @@ def test_diffusion_attention_is_bidirectional():
 
 
 def test_causal_model_stays_causal():
-    model = ResABitForCausalLM(_tiny(diffusion=False)).eval()
+    model = TriDiForCausalLM(_tiny(diffusion=False)).eval()
     ids = torch.randint(0, 500, (1, 16))
 
     with torch.no_grad():
@@ -163,7 +163,7 @@ def test_causal_model_stays_causal():
 
 
 def test_diffusion_loss_refuses_a_causal_model():
-    model = ResABitForCausalLM(_tiny(diffusion=False))
+    model = TriDiForCausalLM(_tiny(diffusion=False))
     ids = torch.randint(0, 500, (2, 8))
     rates = sample_rates(2)
     _, mask = corrupt(ids, rates, mask_token_id=511)
@@ -178,7 +178,7 @@ def test_mask_token_must_be_inside_the_embedding_table():
 
 
 def test_gradients_reach_the_masked_positions():
-    model = ResABitForCausalLM(_tiny(diffusion=True))
+    model = TriDiForCausalLM(_tiny(diffusion=True))
     ids = torch.randint(0, 500, (2, 16))
     rates = sample_rates(2)
     _, mask = corrupt(ids, rates, mask_token_id=511)
@@ -194,7 +194,7 @@ def test_gradients_reach_the_masked_positions():
 
 
 def test_generate_fills_every_masked_slot():
-    model = ResABitForCausalLM(_tiny(diffusion=True)).eval()
+    model = TriDiForCausalLM(_tiny(diffusion=True)).eval()
     ids = torch.randint(0, 500, (2, 24))
     ids[:, 8:16] = 511
 
@@ -211,7 +211,7 @@ def test_generate_never_emits_the_mask_token():
     by accident.
     """
     torch.manual_seed(3)
-    model = ResABitForCausalLM(_tiny(diffusion=True)).eval()
+    model = TriDiForCausalLM(_tiny(diffusion=True)).eval()
     with torch.no_grad():                        # make [MASK] the argmax
         model.embed_tokens.weight[511] += 30.0
 
@@ -222,7 +222,7 @@ def test_generate_never_emits_the_mask_token():
 
 
 def test_generate_leaves_the_given_context_alone():
-    model = ResABitForCausalLM(_tiny(diffusion=True)).eval()
+    model = TriDiForCausalLM(_tiny(diffusion=True)).eval()
     ids = torch.randint(0, 500, (1, 20))
     ids[0, 10:14] = 511
     fixed = ids.clone()
@@ -233,6 +233,6 @@ def test_generate_leaves_the_given_context_alone():
 
 
 def test_generate_on_a_clean_sequence_is_a_no_op():
-    model = ResABitForCausalLM(_tiny(diffusion=True)).eval()
+    model = TriDiForCausalLM(_tiny(diffusion=True)).eval()
     ids = torch.randint(0, 500, (1, 12))
     assert torch.equal(model.diffusion_generate(ids.clone(), num_steps=4), ids)

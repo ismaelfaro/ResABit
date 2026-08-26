@@ -1,4 +1,4 @@
-"""Run the ResABit ablation: 2x2 over {FP32, 1-bit} x {no AR, AR}.
+"""Run the TriDi ablation: 2x2 over {FP32, 1-bit} x {no AR, AR}.
 
 Protocol
 --------
@@ -100,10 +100,10 @@ def load_ledger() -> list[dict]:
 
 def build_torch_model(arm: Arm, mlx_state: dict, device: torch.device):
     """Rehydrate a trained MLX model inside the PyTorch eval harness."""
-    from src.model import ResABitForCausalLM
+    from src.model import TriDiForCausalLM
 
     config = arm.model_config()
-    model = ResABitForCausalLM(config)
+    model = TriDiForCausalLM(config)
     target = dict(model.named_parameters())
     if config.tie_word_embeddings:
         target.pop("lm_head.weight", None)

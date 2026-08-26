@@ -38,7 +38,7 @@ from mlx.utils import tree_flatten, tree_map
 
 from ..config import ModelConfig
 from ..trainer import TrainConfig, TrainResult, batch_order, cosine_lr
-from .model import MLXResABit
+from .model import MLXTriDi
 
 # TrainConfig and TrainResult live in ``src.trainer`` so the pure-PyTorch
 # loop (Colab/CUDA, where MLX does not exist) shares them; re-exported here
@@ -89,7 +89,7 @@ def run_qat(
     train_config: TrainConfig,
     windows: np.ndarray,
     log=print,
-) -> tuple[MLXResABit, TrainResult]:
+) -> tuple[MLXTriDi, TrainResult]:
     """Fine-tune ``model_config`` for ``train_config.steps`` optimizer steps."""
     from . import load_mlx_pretrained
 
@@ -173,7 +173,7 @@ def run_qat(
     return model, result
 
 
-def mlx_to_torch_state(model: MLXResABit) -> dict:
+def mlx_to_torch_state(model: MLXTriDi) -> dict:
     """Export MLX parameters as a torch state_dict for the eval harness."""
     import torch
 

@@ -1,6 +1,6 @@
 """Push an exported checkpoint to the Hugging Face Hub. **You run this, not the agent.**
 
-    python upload_to_hf.py checkpoints/resabit-qwen1.5-0.5b-1bit --repo <user>/resabit-qwen1.5-0.5b-1bit
+    python upload_to_hf.py checkpoints/tridi-qwen1.5-0.5b-1bit --repo <user>/tridi-qwen1.5-0.5b-1bit
     python upload_to_hf.py ... --private
     python upload_to_hf.py ... --confirm      # actually upload
 
@@ -123,7 +123,7 @@ def main() -> None:
         repo_id=args.repo,
         repo_type="model",
         commit_message=(
-            f"ResABit {manifest.get('arm')} seed {manifest.get('seed')} "
+            f"TriDi {manifest.get('arm')} seed {manifest.get('seed')} "
             f"(source commit {manifest.get('commit')})"
         ),
     )

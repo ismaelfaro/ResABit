@@ -1,4 +1,4 @@
-"""MLX port of the ResABit model -- the training backend on Apple Silicon.
+"""MLX port of the TriDi model -- the training backend on Apple Silicon.
 
 Measured against the PyTorch reference on an M5: 1140 ms vs 1959 ms per
 fake-quantised fwd+bwd step at batch 2 x seq 512 (1.72x). Over a four-arm,
@@ -21,7 +21,7 @@ import mlx.nn as nn
 
 from ..config import ModelConfig
 
-__all__ = ["MLXResABit", "fake_quantize", "ternary_fake_quantize"]
+__all__ = ["MLXTriDi", "fake_quantize", "ternary_fake_quantize"]
 
 
 def fake_quantize(w: mx.array, group_size: int) -> mx.array:
@@ -204,7 +204,7 @@ class DecoderLayer(nn.Module):
         return x, acc
 
 
-class MLXResABit(nn.Module):
+class MLXTriDi(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
         self.cfg = cfg

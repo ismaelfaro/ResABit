@@ -9,7 +9,7 @@ Reads ONLY raw ledger rows from results/*.jsonl; shares/interactions/SEs are
 recomputed from loss_nats and log(151936), never taken from derived ledger
 fields (ledger 'headroom' fields are cross-checked but not used).
 
-Run:  cd /Users/ismaelsertage/code/ResABit && .venv/bin/python <this file>
+Run:  cd /Users/ismaelsertage/code/TriDi && .venv/bin/python <this file>
 """
 import json
 import math

@@ -1,4 +1,4 @@
-"""Load HuggingFace Qwen2 weights into :class:`ResABitForCausalLM`.
+"""Load HuggingFace Qwen2 weights into :class:`TriDiForCausalLM`.
 
 The original converter called ``load_state_dict(..., strict=False)``, which
 silently discarded every key it failed to match -- including all 72 attention
@@ -14,7 +14,7 @@ from pathlib import Path
 import torch
 
 from .config import ModelConfig
-from .model import ResABitForCausalLM
+from .model import TriDiForCausalLM
 
 __all__ = [
     "load_hf_state_dict",
@@ -64,10 +64,10 @@ def load_pretrained(
     hf_state: dict[str, torch.Tensor] | None = None,
     dtype: torch.dtype = torch.float32,
     verbose: bool = True,
-) -> ResABitForCausalLM:
+) -> TriDiForCausalLM:
     """Build a model from ``config`` and fill it with pretrained Qwen2 weights."""
     config = config or ModelConfig()
-    model = ResABitForCausalLM(config)
+    model = TriDiForCausalLM(config)
 
     state = remap_qwen2_keys(hf_state or load_hf_state_dict(model_id))
     state = {k: v.to(dtype) for k, v in state.items()}
@@ -115,7 +115,7 @@ def load_pretrained(
 def load_checkpoint(
     path: str | Path,
     device: torch.device | str | None = None,
-) -> tuple[ResABitForCausalLM, dict]:
+) -> tuple[TriDiForCausalLM, dict]:
     """Load an exported checkpoint directory: safetensors weights + manifest.
 
     Accepts either the manifest written by ``export_checkpoint.py`` (model
@@ -136,7 +136,7 @@ def load_checkpoint(
     manifest = json.loads((directory / "config.json").read_text())
     config = ModelConfig.from_dict(manifest.get("model_config", manifest))
 
-    model = ResABitForCausalLM(config)
+    model = TriDiForCausalLM(config)
     state = load_file(str(directory / "model.safetensors"))
     missing, unexpected = model.load_state_dict(state, strict=False)
 

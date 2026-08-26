@@ -306,7 +306,7 @@ def render(log: Path, sample_seconds: float = 0.0) -> str:
     by_arm = {p["arm"]: p for p in running}
 
     lines = [
-        "ResABit — export dashboard",
+        "TriDi — export dashboard",
         "=" * 78,
     ]
     if log.exists():

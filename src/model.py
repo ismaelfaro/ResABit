@@ -1,4 +1,4 @@
-"""ResABit reference model (PyTorch).
+"""TriDi reference model (PyTorch).
 
 A faithful reimplementation of ``Qwen2ForCausalLM`` with two switches layered
 on top: Q1_0_g128 weights on the block projections, and the cross-layer
@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from .config import ModelConfig
 from .quantization import LowBitLinear
 
-__all__ = ["ResABitForCausalLM", "RMSNorm", "build_linear"]
+__all__ = ["TriDiForCausalLM", "RMSNorm", "build_linear"]
 
 
 def build_linear(
@@ -237,7 +237,7 @@ class DecoderLayer(nn.Module):
 # -- Full model -----------------------------------------------------------
 
 
-class ResABitForCausalLM(nn.Module):
+class TriDiForCausalLM(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.config = config

@@ -23,7 +23,7 @@ set -euo pipefail
 STEPS="${1:?usage: run_ladder.sh <steps> [seeds]}"
 SEEDS="${2:-0}"
 LOG="results/grid_ladder.log"
-SESSION="resabit-rung-${STEPS}"
+SESSION="tridi-rung-${STEPS}"
 
 cd "$(dirname "$0")"
 mkdir -p results

@@ -1,4 +1,4 @@
-"""MLX training backend for ResABit (Apple Silicon)."""
+"""MLX training backend for TriDi (Apple Silicon)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import mlx.core as mx
 import numpy as np
 
 from ..config import ModelConfig
-from .model import MLXResABit, fake_quantize
+from .model import MLXTriDi, fake_quantize
 
-__all__ = ["MLXResABit", "fake_quantize", "load_mlx_pretrained", "torch_state_to_mlx"]
+__all__ = ["MLXTriDi", "fake_quantize", "load_mlx_pretrained", "torch_state_to_mlx"]
 
 
 def torch_state_to_mlx(state: dict) -> dict:
@@ -38,14 +38,14 @@ def load_mlx_pretrained(
     config: ModelConfig | None = None,
     hf_state: dict | None = None,
     model_id: str | None = None,
-) -> MLXResABit:
-    """Build an :class:`MLXResABit` and fill it with pretrained Qwen2 weights."""
+) -> MLXTriDi:
+    """Build an :class:`MLXTriDi` and fill it with pretrained Qwen2 weights."""
     from ..loader import HF_MODEL_ID, load_hf_state_dict, remap_qwen2_keys
 
     config = config or ModelConfig()
     state = remap_qwen2_keys(hf_state or load_hf_state_dict(model_id or HF_MODEL_ID))
 
-    model = MLXResABit(config)
+    model = MLXTriDi(config)
     model.update(torch_state_to_mlx(state))
     mx.eval(model.parameters())
     return model

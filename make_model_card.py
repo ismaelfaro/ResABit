@@ -1,6 +1,6 @@
 """Generate a checkpoint's model card from its manifest.
 
-    python make_model_card.py checkpoints/resabit-qwen1.5-0.5b-1bit
+    python make_model_card.py checkpoints/tridi-qwen1.5-0.5b-1bit
 
 Written rather than hand-authored for the same reason the results table is:
 a card is where a quantization project overstates itself, and the two numbers
@@ -160,7 +160,7 @@ tags:
   - research-artifact
 ---
 
-# ResABit — {ARM_TITLES.get(arm, arm)} (seed {manifest["seed"]})
+# TriDi — {ARM_TITLES.get(arm, arm)} (seed {manifest["seed"]})
 
 ## Do not use this model to generate text
 
@@ -224,13 +224,13 @@ be false.
 
 ## Loading
 
-Requires the [ResABit repository]({source_repo}); this is not a
+Requires the [TriDi repository]({source_repo}); this is not a
 `transformers` architecture.
 
 ```python
 from src.loader import load_checkpoint
 
-model, manifest = load_checkpoint("resabit-{arm}-seed{manifest["seed"]}")
+model, manifest = load_checkpoint("tridi-{arm}-seed{manifest["seed"]}")
 print(manifest["metrics"]["wikitext2_val_frozen"]["perplexity"])
 ```
 
@@ -288,7 +288,7 @@ What is offered here is the measurement.
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("checkpoint", help="directory written by export_checkpoint.py")
-    p.add_argument("--repo", default="https://github.com/ismaelfaro/ResABit",
+    p.add_argument("--repo", default="https://github.com/ismaelfaro/TriDi",
                    help="source repository URL to link from the card")
     args = p.parse_args()
 

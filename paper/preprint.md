@@ -1,5 +1,9 @@
 # Sub-2-bit weights for a discrete diffusion language model: a factorial measurement at 0.5B
 
+*TriDi (formerly ResABit). Ledger rows, model cards and git history predating
+this draft carry the old name; they are records of what was run and are not
+rewritten.*
+
 **Draft preprint. Every number is generated from a ledger
 (`results/ledger.jsonl`, `results/diffusion_ledger.jsonl`,
 `results/grid_ledger.jsonl`, `results/inference_bench.jsonl`,
@@ -676,9 +680,9 @@ its neighbours, so the comparison is tabulated rather than implied:
 
 | model | scheme | params | training/recovery tokens | vs ours |
 |---|---|---|---|---|
-| **ResABit grid (this work)** | ternary QAT recovery | 0.5B | **1.23M** | 1x |
-| ResABit ladder rung 2 | ternary QAT recovery | 0.5B | 4.92M | 4x |
-| ResABit ladder rung 3 | ternary QAT recovery | 0.5B | 19.7M | 16x |
+| **TriDi grid (this work)** | ternary QAT recovery | 0.5B | **1.23M** | 1x |
+| TriDi ladder rung 2 | ternary QAT recovery | 0.5B | 4.92M | 4x |
+| TriDi ladder rung 3 | ternary QAT recovery | 0.5B | 19.7M | 16x |
 | Bonsai 0.5B (deepgrove) | ternary, trained | 0.5B | 3.8B | ~3,100x |
 | BitNet b1.58 (paper) | ternary, trained | 0.7–3.9B | 100B | ~81,000x |
 | BitNet b1.58 2B4T | ternary, trained | 2B | 4T | ~3,300,000x |

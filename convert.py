@@ -1,4 +1,4 @@
-"""Convert Qwen1.5-0.5B-Chat into a ResABit checkpoint.
+"""Convert Qwen1.5-0.5B-Chat into a TriDi checkpoint.
 
     python convert.py --output checkpoints/qwen0.5b-1bit
     python convert.py --no-quantize --output checkpoints/qwen0.5b-fp32

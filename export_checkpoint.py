@@ -169,7 +169,7 @@ def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
 
     arm = ARMS[args.arm]
-    out_dir = Path(args.out) if args.out else CHECKPOINT_DIR / f"resabit-{args.arm}-seed{args.seed}"
+    out_dir = Path(args.out) if args.out else CHECKPOINT_DIR / f"tridi-{args.arm}-seed{args.seed}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")

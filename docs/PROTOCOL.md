@@ -1,4 +1,4 @@
-# ResABit ablation protocol
+# TriDi ablation protocol
 
 The question is narrow on purpose: **does a cross-layer attention residual
 reduce the damage that 1-bit weight quantization does to a pretrained
@@ -83,7 +83,7 @@ compensation structure dissolves. Its fix is to derive each path
 *sequentially* from one shared full-precision weight, enforcing a strict
 hierarchy where path k corrects path k-1's error.
 
-ResABit's accumulator `R_l = sum_{i<=l} A_i` is a parallel pathway. RaBiT
+TriDi's accumulator `R_l = sum_{i<=l} A_i` is a parallel pathway. RaBiT
 predicts it should degrade into redundancy. **Any write-up must engage this
 head-on**, and the alpha trajectory is the evidence: if the gates grow and
 then collapse toward zero, that is inter-path adaptation happening in front

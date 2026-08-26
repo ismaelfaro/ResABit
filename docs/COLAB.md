@@ -1,4 +1,4 @@
-# Running ResABit on Google Colab (and from VS Code)
+# Running TriDi on Google Colab (and from VS Code)
 
 MLX — the training backend every local number was produced on — is Apple
 Silicon only. Colab is Linux/CUDA, so it trains through the pure-PyTorch
@@ -18,12 +18,12 @@ inside one paired comparison.
 
 ## Route 1 — the notebook (recommended)
 
-`colab/ResABit_colab.ipynb`: GPU check → clone → install → test suite →
+`colab/TriDi_colab.ipynb`: GPU check → clone → install → test suite →
 smoke grid → full grid → ledger to Drive. Open it in Colab directly once the
 repo is on GitHub:
 
 ```
-https://colab.research.google.com/github/<user>/ResABit/blob/<branch>/colab/ResABit_colab.ipynb
+https://colab.research.google.com/github/<user>/TriDi/blob/<branch>/colab/TriDi_colab.ipynb
 ```
 
 The branch must be pushed first (`git push -u origin <branch>`). Until then,
@@ -68,7 +68,7 @@ blocked.
 ### After connecting, either way
 
 ```bash
-git clone <repo-url> && cd ResABit
+git clone <repo-url> && cd TriDi
 pip install -r requirements.txt        # mlx line self-skips on Linux
 python -m pytest tests/ -q             # mlx parity tests self-skip
 python run_grid.py --seeds 0 --steps 2 --eval-blocks 2 --eval-samples 1 --eval-tokens 4096   # smoke

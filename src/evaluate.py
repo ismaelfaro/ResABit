@@ -1,4 +1,4 @@
-"""Evaluation metrics for the ResABit ablation.
+"""Evaluation metrics for the TriDi ablation.
 
 Three families, deliberately:
 

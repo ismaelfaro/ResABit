@@ -18,7 +18,7 @@ import torch
 from export_checkpoint import save_safetensors, storage_report
 from src.config import ModelConfig
 from src.loader import load_checkpoint
-from src.model import ResABitForCausalLM
+from src.model import TriDiForCausalLM
 from src.quantization import quantize_model_weights
 
 
@@ -56,7 +56,7 @@ def test_export_reload_is_exact(tmp_path, quantize_linear, use_attention_residua
         quantize_linear=quantize_linear,
         use_attention_residuals=use_attention_residuals,
     )
-    model = ResABitForCausalLM(config).eval()
+    model = TriDiForCausalLM(config).eval()
     if use_attention_residuals:
         with torch.no_grad():                     # a zero gate hides gate bugs
             for layer in model.layers:
@@ -83,7 +83,7 @@ def test_reloaded_model_stays_frozen(tmp_path):
     it would fall back to the training forward over master weights that no
     longer exist.
     """
-    model = ResABitForCausalLM(_tiny(quantize_linear=True)).eval()
+    model = TriDiForCausalLM(_tiny(quantize_linear=True)).eval()
     quantize_model_weights(model)
 
     reloaded, _ = load_checkpoint(_export(model, tmp_path))
@@ -96,7 +96,7 @@ def test_loader_rejects_a_truncated_checkpoint(tmp_path):
     """Only the tied readout may be missing; anything else is a bad file."""
     from safetensors.torch import load_file, save_file
 
-    model = ResABitForCausalLM(_tiny(quantize_linear=True)).eval()
+    model = TriDiForCausalLM(_tiny(quantize_linear=True)).eval()
     quantize_model_weights(model)
     _export(model, tmp_path)
 
@@ -116,7 +116,7 @@ def test_freezing_costs_only_the_fp16_scales(tmp_path):
     `export_checkpoint.py` measures the frozen path instead of inheriting the
     ledger's perplexity.
     """
-    model = ResABitForCausalLM(_tiny(quantize_linear=True)).eval()
+    model = TriDiForCausalLM(_tiny(quantize_linear=True)).eval()
     ids = torch.randint(0, 512, (2, 16))
     with torch.no_grad():
         train_forward = model(input_ids=ids)["logits"]
@@ -130,7 +130,7 @@ def test_freezing_costs_only_the_fp16_scales(tmp_path):
 def test_storage_accounting_does_not_double_count():
     """Binarised weights and the FP32 remainder must partition the model."""
     config = _tiny(quantize_linear=True)
-    model = ResABitForCausalLM(config).eval()
+    model = TriDiForCausalLM(config).eval()
     quantize_model_weights(model)
 
     report = storage_report(model)
